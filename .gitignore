@@ -13,3 +13,4 @@ logs/
 temp/
 
 .DS_Store
+.env

@@ -1,29 +1,40 @@
 from environments.conclave_env import ConclaveEnv
 import json
-import boto3
 from typing import Dict, List, Optional
 import logging
-import time
-import botocore.exceptions
+import os
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 max_tokens = 1000
 temperature = 0.5
-bedrock_model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
 
 class Agent:
     def __init__(self, agent_id: int, name: str, background: str, env: ConclaveEnv):
         self.agent_id = agent_id
         self.name = name
         self.background = background
-        self.bedrock = boto3.client('bedrock-runtime', region_name="us-west-2")
         self.env = env
         self.vote_history = []
         self.logger = logging.getLogger(name)
+        
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OpenRouter API key not found")
+            
+        # Initialize OpenAI client with OpenRouter base URL
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key
+        )
 
     def cast_vote(self) -> None:
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history()
+        discussion_history = self.env.get_discussion_history(self.agent_id)
         prompt = f"""You are {self.name}. Here is some information about yourself: {self.background}
 You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
 The candidates are:
@@ -35,7 +46,7 @@ The candidates are:
 
 {discussion_history}
 
-Use your vote tool to cast your vote for one of the candidates.
+Please vote for one of the candidates using the cast_vote tool. Make sure to include both your chosen candidate and a detailed explanation of why you chose them.
         """
         if (self.agent_id == 0):
             print(prompt)
@@ -43,35 +54,37 @@ Use your vote tool to cast your vote for one of the candidates.
         # Define vote tool
         tools = [
             {
-                "name": "vote",
-                "description": "Cast your vote for one agent (cannot be yourself)",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explain why you chose this agent"
+                "type": "function",
+                "function": {
+                    "name": "cast_vote",
+                    "description": "Cast a vote for a candidate",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "candidate": {
+                                "type": "integer",
+                                "description": "The ID of the candidate to vote for"
+                            },
+                            "explanation": {
+                                "type": "string",
+                                "description": "Explain why you chose this candidate"
+                            }
                         },
-                        "agent_id": {
-                            "type": "integer",
-                            "description": "The ID of the agent you're voting for"
-                        }
-                    },
-                    "required": ["agent_id", "reasoning"]
+                        "required": ["candidate", "explanation"]
+                    }
                 }
             }
         ]
         try:
-            response = self._invoke_claude(prompt, tools)
+            response = self._invoke_claude(prompt, tools, tool_choice="cast_vote")
 
             # Handle tool call response
-            if 'content' in response and len(response['content']) > 0:
-                content_item = response['content'][0]
-
-                if content_item['type'] == 'tool_use' and content_item['name'] == 'vote':
-                    tool_input = content_item['input']
-                    vote = tool_input.get("agent_id")
-                    reasoning = tool_input.get("reasoning", "")
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                tool_call = response.tool_calls[0]
+                if tool_call.function.name == 'cast_vote':
+                    tool_input = json.loads(tool_call.function.arguments)
+                    vote = tool_input.get("candidate")
+                    reasoning = tool_input.get("explanation", "No explanation provided.")
 
                     # Save vote reasoning
                     self.vote_history.append({
@@ -99,7 +112,7 @@ Use your vote tool to cast your vote for one of the candidates.
         """
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history()
+        discussion_history = self.env.get_discussion_history(self.agent_id)
 
         prompt = f"""You are {self.name}. Here is some information about yourself: {self.background}
 You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
@@ -123,68 +136,69 @@ Consider factors such as:
 - Do you have important information or perspectives that haven't been shared yet?
 - Are the voting trends concerning to you?
 
-Use your evaluate_speaking_urgency tool to provide your urgency score and reasoning.
+Use the evaluate_speaking_urgency tool to provide your urgency score and reasoning.
         """
-        if (self.agent_id == 0):
-            print(prompt)
-        self.logger.info(prompt)
 
         # Define urgency evaluation tool
         tools = [
             {
-                "name": "evaluate_speaking_urgency",
-                "description": "Evaluate how urgently you want to speak",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "urgency_score": {
-                            "type": "integer",
-                            "description": "Your urgency score (1-100)"
+                "type": "function",
+                "function": {
+                    "name": "evaluate_speaking_urgency",
+                    "description": "Evaluate how urgently you want to speak",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "urgency_score": {
+                                "type": "integer",
+                                "description": "Your urgency score (1-100)"
+                            },
+                            "reasoning": {
+                                "type": "string",
+                                "description": "Explain why you rated your urgency at this level"
+                            }
                         },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explain why you rated your urgency at this level"
-                        }
-                    },
-                    "required": ["urgency_score", "reasoning"]
+                        "required": ["urgency_score", "reasoning"]
+                    }
                 }
             }
         ]
 
         try:
-            response = self._invoke_claude(prompt, tools)
+            response = self._invoke_claude(prompt, tools, tool_choice="evaluate_speaking_urgency")
 
             # Handle tool call response
-            if 'content' in response and len(response['content']) > 0:
-                content_item = response['content'][0]
-
-                if content_item['type'] == 'tool_use' and content_item['name'] == 'evaluate_speaking_urgency':
-                    tool_input = content_item['input']
-                    urgency_score = tool_input.get("urgency_score", 50)  # Default to 50 if missing
-                    reasoning = tool_input.get("reasoning", "")
-
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                tool_call = response.tool_calls[0]
+                if tool_call.function.name == 'evaluate_speaking_urgency':
+                    tool_input = json.loads(tool_call.function.arguments)
+                    urgency_score = tool_input.get("urgency_score", 50)
+                    reasoning = tool_input.get("reasoning", "No reasoning provided.")
+                    
                     # Ensure score is in range 1-100
-                    urgency_score = max(1, min(100, urgency_score))
-
-                    result = {
+                    urgency_score = max(1, min(100, int(urgency_score)))
+                    
+                    return {
                         "agent_id": self.agent_id,
                         "urgency_score": urgency_score,
                         "reasoning": reasoning
                     }
-
-                    self.logger.info(f"{self.name} ({self.agent_id}) speaking urgency: {urgency_score}/100\nReasoning: {reasoning}")
-                    return result
-
                 else:
                     raise ValueError("Invalid tool use")
+            else:
+                # Fallback if no tool call
+                return {
+                    "agent_id": self.agent_id,
+                    "urgency_score": 50,
+                    "reasoning": "No urgency evaluation received from AI"
+                }
 
         except Exception as e:
-            # Default urgency if there's an error
-            self.logger.error(f"Error in LlmAgent {self.agent_id} speaking urgency evaluation: {e}")
+            self.logger.error(f"Error in LlmAgent {self.agent_id} speaking urgency: {e}")
             return {
                 "agent_id": self.agent_id,
-                "urgency_score": 50,  # Default middle urgency
-                "reasoning": "Error evaluating speaking urgency"
+                "urgency_score": 50,
+                "reasoning": f"Error during urgency evaluation: {e}"
             }
 
     def discuss(self, urgency_data: Optional[Dict] = None) -> Optional[Dict]:
@@ -199,7 +213,7 @@ Use your evaluate_speaking_urgency tool to provide your urgency score and reason
         """
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history()
+        discussion_history = self.env.get_discussion_history(self.agent_id)
 
         # Include speaking urgency information if available
         urgency_context = ""
@@ -222,112 +236,123 @@ The candidates are:
 {discussion_history}
 
 {urgency_context}
-It's time for a discussion round. Use your speak tool to contribute to the discussion.
+It's time for a discussion round. Use the speak_message tool to contribute to the discussion.
 Your goal is to influence others based on your beliefs and background. You can:
 1. Make your case for a particular candidate
 2. Question the qualifications of other candidates
 3. Respond to previous speakers
 4. Share your perspectives on what the Church needs
 
-Be authentic to your character and background in your speech.
+Be authentic to your character and background. Provide a meaningful contribution of 100-300 words.
         """
-        if (self.agent_id == 0):
-            print(prompt)
-        self.logger.info(prompt)
 
         # Define speak tool
         tools = [
             {
-                "name": "speak",
-                "description": "Contribute to the conclave discussion",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Your contribution to the discussion (200-500 words)"
-                        }
-                    },
-                    "required": ["message"]
+                "type": "function",
+                "function": {
+                    "name": "speak_message",
+                    "description": "Contribute a message to the conclave discussion",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {
+                                "type": "string",
+                                "description": "Your contribution to the discussion (100-300 words)"
+                            }
+                        },
+                        "required": ["message"]
+                    }
                 }
             }
         ]
 
         try:
-            response = self._invoke_claude(prompt, tools)
+            response = self._invoke_claude(prompt, tools, tool_choice="speak_message")
 
             # Handle tool call response
-            if 'content' in response and len(response['content']) > 0:
-                content_item = response['content'][0]
-
-                if content_item['type'] == 'tool_use' and content_item['name'] == 'speak':
-                    tool_input = content_item['input']
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                tool_call = response.tool_calls[0]
+                if tool_call.function.name == 'speak_message':
+                    tool_input = json.loads(tool_call.function.arguments)
                     message = tool_input.get("message", "")
 
+                    # Log the discussion contribution
+                    self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
+                    print(f"\nCardinal {self.agent_id} - {self.name} speaks:\n{message}\n")
+
                     # Return the discussion contribution
-                    discussion_entry = {
+                    return {
                         "agent_id": self.agent_id,
                         "message": message
                     }
-
-                    self.logger.info(f"{self.name} ({self.agent_id}) contributed to the discussion:\n{message}")
-                    return discussion_entry
-
                 else:
                     raise ValueError("Invalid tool use")
+            else:
+                # Fallback if no tool call
+                return {
+                    "agent_id": self.agent_id,
+                    "message": "No discussion contribution received from AI"
+                }
 
         except Exception as e:
             # Log the error and return None if there's a problem
             self.logger.error(f"Error in LlmAgent {self.agent_id} discussion: {e}")
             return None
 
-    def _invoke_claude(self, prompt: str, tools: List[Dict] = []) -> Dict:
-        """Invoke Claude through AWS Bedrock with tool calling."""
-
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
-
-        # Anthropic Claude API format with tool calling
-        payload = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": messages,
-        }
-
-        # Add tools if provided
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = {"type": "any"}
-
-        # Exponential backoff parameters
-        max_retries = 9 # max time delay is 256 seconds (2^8)
+    def _invoke_claude(self, prompt: str, tools: List[Dict] = [], tool_choice: str = None) -> Dict:
+        """Invoke Claude through OpenRouter."""
+        max_retries = 3
         retry_count = 0
-        base_delay = 1  # Start with 1 second delay
-
-        while True:
+        
+        while retry_count < max_retries:
             try:
-                response = self.bedrock.invoke_model(
-                    modelId=bedrock_model_id,
-                    body=json.dumps(payload)
-                )
-                response_body = json.loads(response['body'].read().decode('utf-8'))
-                return response_body
-
-            except botocore.exceptions.ClientError as e:
-                error_code = e.response.get('Error', {}).get('Code', '')
-
-                # Check if it's a throttling exception
-                if error_code == 'ThrottlingException' and retry_count < max_retries:
+                # Prepare the request parameters
+                request_params = {
+                    "model": "openai/gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": temperature
+                }
+                
+                # Add tools if provided
+                if tools:
+                    request_params["tools"] = tools
+                    
+                    # Add tool_choice if specified
+                    if tool_choice:
+                        request_params["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
+                
+                response = self.client.chat.completions.create(**request_params)
+                
+                if not response or not response.choices:
+                    raise ValueError("Empty response from API")
+                    
+                return response.choices[0].message
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # Check for token-related errors - don't retry these
+                if any(error in error_str for error in [
+                    "insufficient_quota",
+                    "token limit",
+                    "credits depleted",
+                    "out of tokens",
+                    "no credits",
+                    "token balance"
+                ]):
+                    raise ValueError("OpenRouter tokens are depleted. Please try again later.")
+                
+                # For server errors (500), retry
+                if "500" in error_str or "internal server error" in error_str:
                     retry_count += 1
-                    delay = base_delay * (2 ** (retry_count - 1))  # Exponential backoff
-                    self.logger.warning(f"ThrottlingException encountered, retrying in {delay} seconds (attempt {retry_count}/{max_retries})")
-                    time.sleep(delay)
-                else:
-                    # Either not a throttling exception or max retries exceeded
-                    self.logger.error(f"Could not vote, Error invoking Claude: {e}")
-                    raise
+                    if retry_count < max_retries:
+                        self.logger.warning(f"Server error, retrying ({retry_count}/{max_retries})")
+                        continue
+                
+                self.logger.error(f"Error invoking OpenRouter API: {e}")
+                raise
 
     def promptize_vote_history(self) -> str:
         if self.vote_history:
