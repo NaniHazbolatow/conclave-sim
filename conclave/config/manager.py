@@ -91,22 +91,44 @@ class ConfigManager:
         """Get simulation configuration section."""
         return self.config.get("simulation", {})
     
-    def get_agent_config(self) -> Dict[str, Any]:
-        """Get agent configuration section."""
-        return self.config.get("agents", {})
+    def get_embedding_config(self) -> Dict[str, Any]:
+        """Get embedding configuration section."""
+        return self.config.get("embeddings", {})
     
-    def get_api_key_from_env(self) -> Optional[str]:
-        """Get the API key from environment variable."""
-        env_var = self.get_remote_config().get("api_key_env", "OPENROUTER_API_KEY")
-        return os.getenv(env_var)
+    def get_embedding_model_name(self) -> str:
+        """Get the embedding model name."""
+        return self.get_embedding_config().get("model_name", "intfloat/e5-large-v2")
+    
+    def get_embedding_device(self) -> str:
+        """Get the embedding device setting."""
+        return self.get_embedding_config().get("device", "auto")
+    
+    def get_embedding_batch_size(self) -> int:
+        """Get the embedding batch size."""
+        return self.get_embedding_config().get("batch_size", 32)
+    
+    def get_embedding_cache_enabled(self) -> bool:
+        """Check if embedding caching is enabled."""
+        return self.get_embedding_config().get("enable_caching", True)
+    
+    def get_embedding_cache_dir(self) -> str:
+        """Get the embedding cache directory."""
+        cache_dir = self.get_embedding_config().get("cache_dir", "~/.cache/embeddings")
+        return os.path.expanduser(cache_dir)
+    
+    def get_embedding_similarity_threshold(self) -> float:
+        """Get the similarity threshold for embedding matches."""
+        return self.get_embedding_config().get("similarity_threshold", 0.7)
     
     def is_local_backend(self) -> bool:
-        """Check if local backend is selected."""
-        return self.get_backend_type().lower() == "local"
+        """Check if the backend is set to local."""
+        return self.get_backend_type() == "local"
     
-    def is_remote_backend(self) -> bool:
-        """Check if remote backend is selected."""
-        return self.get_backend_type().lower() == "remote"
+    def get_api_key_from_env(self) -> Optional[str]:
+        """Get API key from environment variable."""
+        remote_config = self.get_remote_config()
+        api_key_env = remote_config.get("api_key_env", "OPENROUTER_API_KEY")
+        return os.environ.get(api_key_env)
     
     def get_llm_client_kwargs(self) -> Dict[str, Any]:
         """
@@ -155,6 +177,28 @@ class ConfigManager:
                 "frequency_penalty": remote_config.get("frequency_penalty", 0.1),
                 "presence_penalty": remote_config.get("presence_penalty", 0.1),
             }
+    
+    def get_embedding_client_kwargs(self) -> Dict[str, Any]:
+        """
+        Get kwargs for initializing the embedding client based on config.
+        
+        Returns:
+            Dictionary of arguments for embedding client initialization.
+        """
+        config = self.get_embedding_config()
+        
+        # Handle device detection
+        device = config.get("device", "auto")
+        if device == "auto":
+            device = None  # Let the embedding client detect automatically
+        
+        return {
+            "model_name": config.get("model_name", "intfloat/e5-large-v2"),
+            "device": device,
+            "batch_size": config.get("batch_size", 32),
+            "enable_caching": config.get("enable_caching", True),
+            "cache_dir": self.get_embedding_cache_dir(),
+        }
     
     def reload_config(self):
         """Reload configuration from file."""

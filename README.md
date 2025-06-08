@@ -81,9 +81,11 @@ Cardinal information is sourced from:
 
 To run a simulation:
 
-1. Make sure you have AWS credentials configured for Bedrock access
-2. `uv sync` to install dependencies
-2. Choose a simulation mode:
+1. Install dependencies: `uv sync`
+2. Configure your LLM backend in `config.yaml`:
+   - For local models: Set `backend: "local"` and choose a model
+   - For remote models: Set `backend: "remote"`, choose a model, and set your API key
+3. Choose a simulation mode:
    ```
    uv run single_round.py    # For a single voting round
    uv run multi_round.py     # For multiple voting rounds

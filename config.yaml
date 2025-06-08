@@ -1,77 +1,103 @@
-# Conclave Simulation Configuration
+# ===================================================================
+# CONCLAVE SIMULATION CONFIGURATION
+# ===================================================================
+# This file configures all aspects of the papal conclave simulation.
+# Modify settings below to customize the simulation behavior.
 
-# LLM Backend Configuration
+# ===================================================================
+# LANGUAGE MODEL (LLM) CONFIGURATION
+# ===================================================================
+# Controls how cardinal agents think and communicate
 llm:
-  # Backend type: "local" (HuggingFace) or "remote" (OpenRouter)
-  backend: "remote"  # Options: "local", "remote"
-  temperature: 0.7
-  max_tokens: 500
+  # Backend type: choose "local" for privacy/offline or "remote" for cloud models
+  backend: "local"  # Options: "local", "remote"
   
-  # Local HuggingFace Configuration
+  # Text generation parameters (affect cardinal personalities)
+  temperature: 0.7        # Creativity/randomness (0.0-2.0, higher = more creative)
+  max_tokens: 500         # Maximum response length per cardinal
+  
+  # Local Model Configuration (HuggingFace models)
   local:
-    model_name: "Qwen/Qwen2.5-3B-Instruct"
-    # Alternative models (for easy switching)
-    # model_name: "rednote-hilab/dots.llm1.inst"  # Requires custom implementation
-    # model_name: "Qwen/Qwen2.5-1.5B-Instruct"
-    # model_name: "microsoft/phi-3-mini-4k-instruct"  # May have cache issues
-    # model_name: "meta-llama/Llama-3.2-1B-Instruct"
+    # Recommended models for different hardware:
+    # - For powerful GPUs: "Qwen/Qwen2.5-3B-Instruct" 
+    # - For limited memory: "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name: "Qwen/Qwen2.5-1.5B-Instruct"
     
-    # Device configuration
-    device: "auto"  # Options: "auto", "cpu", "cuda", "mps"
+    # Hardware acceleration (auto-detects best option)
+    device: "auto"  # Options: "auto", "cpu", "cuda" (NVIDIA), "mps" (M1/M2 Mac)
     
-    # Use quantization to reduce memory usage (requires bitsandbytes)
-    use_quantization: false  # Set to true if bitsandbytes is available
+    # Memory optimization (requires: pip install bitsandbytes)
+    use_quantization: false  # Set to true to reduce memory usage
     
-    # Cache directory for downloaded models
+    # Model storage location
     cache_dir: "~/.cache/huggingface"
     
-    # Generation parameters
+    # Advanced generation parameters
     do_sample: true
-    top_p: 0.9
-    repetition_penalty: 1.1
+    top_p: 0.9              # Nucleus sampling threshold
+    repetition_penalty: 1.1  # Prevents repetitive text
     
-  # Remote OpenRouter Configuration  
+  # Remote Model Configuration (OpenRouter API)
   remote:
-    # OpenRouter model name
-    model_name: "openai/gpt-4o-mini"
-    #model_name: "mistralai/mistral-nemo"
-    #model_name: "qwen/qwen3-14b"
-
-    # API configuration
+    # Choose your preferred cloud model:
+    # model_name: "openai/gpt-4o-mini"      # Fast, cost-effective
+    # model_name: "mistralai/mistral-nemo"  # Good balance
+    # model_name: "qwen/qwen3-14b"          # High quality
+    
+    # API settings
     base_url: "https://openrouter.ai/api/v1"
-    api_key_env: "OPENROUTER_API_KEY"  # Environment variable name
+    api_key_env: "OPENROUTER_API_KEY"  # Set this environment variable
     
     # Generation parameters
     top_p: 0.9
     frequency_penalty: 0.1
     presence_penalty: 0.1
 
-# Simulation Configuration
-simulation:
-  # Logging level
-  log_level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+# ===================================================================
+# EMBEDDING MODEL CONFIGURATION
+# ===================================================================
+# Controls similarity search and cardinal relationship analysis
+embeddings:
+  # Model selection (affects quality vs speed tradeoff)
+  model_name: "intfloat/e5-large-v2"  # High quality, 1024 dimensions
+  # Alternative models:
+  # "all-MiniLM-L6-v2"           # Faster, 384 dimensions, good for testing
+  # "sentence-transformers/all-mpnet-base-v2"  # Balanced option
   
-  # Number of discussion rounds
-  max_discussion_rounds: 3
+  # Hardware acceleration (auto-detects MPS for M1/M2 Macs)
+  device: "auto"  # Options: "auto", "cpu", "cuda", "mps"
   
-  # Maximum speaking agents per round
-  max_speakers_per_round: 5
+  # Performance settings
+  batch_size: 32              # Number of texts to process at once
+  enable_caching: true        # Cache embeddings to disk for faster reuse
+  cache_dir: "~/.cache/embeddings"  # Where to store cached embeddings
   
-  # Enable detailed performance logging
-  performance_logging: true
+  # Similarity search settings
+  similarity_threshold: 0.7   # Minimum similarity for matches (0.0-1.0)
+  max_search_results: 10      # Maximum similar items to return
+  
+  # Clustering settings (for grouping similar cardinals)
+  clustering:
+    enable: true
+    method: "kmeans"          # Options: "kmeans", "hierarchical"
+    n_clusters: "auto"        # Number of groups, or "auto" to detect
+    min_cluster_size: 2       # Minimum cardinals per cluster
 
-# Agent Configuration
-agents:
-  # Default agent behavior parameters
-  default_urgency: 50  # 1-100 scale
+# ===================================================================
+# SIMULATION SETTINGS
+# ===================================================================
+# Core simulation behavior and rules
+simulation:
+  # Debugging and monitoring
+  log_level: "INFO"         # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  performance_logging: true # Track timing and performance metrics
   
-  # Voting behavior
+  # Discussion structure
+  max_discussion_rounds: 3      # Number of debate rounds before voting
+  max_speakers_per_round: 5     # Maximum cardinals who can speak per round
+  
+  # Voting rules
   voting:
-    enable_abstention: false
-    require_reasoning: true
-    
-  # Discussion behavior  
-  discussion:
-    min_message_length: 100
-    max_message_length: 500
-    enable_interruptions: false
+    enable_abstention: false    # Allow cardinals to abstain from voting
+    require_reasoning: true     # Cardinals must explain their vote
+    supermajority_threshold: 0.667  # Requires 2/3 supermajority (67%) to elect Pope
