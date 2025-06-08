@@ -1,5 +1,5 @@
-from environments.conclave_env import ConclaveEnv
-from agents.base import Agent
+from conclave.environments.conclave_env import ConclaveEnv
+from conclave.agents.base import Agent
 import pandas as pd
 import logging
 import datetime
@@ -27,11 +27,11 @@ def main():
     env = ConclaveEnv()
 
     # Read cardinals from CSV file
-    cardinals_df = pd.read_csv('cardinal_electors_2025.csv')
+    cardinals_df = pd.read_csv('data/cardinal_electors_2025.csv')
 
     # Create Agent instances and add them to env.agents
     counter = 0
-    for idx, row in cardinals_df.head(20).iterrows():
+    for idx, row in cardinals_df.head(5).iterrows():
         # counter += 1
         # if counter > 50:
         #     break
@@ -51,7 +51,7 @@ def main():
     while not winner_found:
         # Run a discussion round with 5 speakers
         # Set random=True to select cardinals randomly instead of by urgency
-        env.run_discussion_round(num_speakers=3, random_selection=True)
+        env.run_discussion_round(num_speakers=5, random_selection=True)
         winner_found = env.run_voting_round()
         print(f"winner_found: {winner_found}")
 

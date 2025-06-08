@@ -1,16 +1,47 @@
-from environments.conclave_env import ConclaveEnv
+from ..environments.conclave_env import ConclaveEnv
 import json
 from typing import Dict, List, Optional
 import logging
 import os
-from openai import OpenAI
-from dotenv import load_dotenv
+import threading
+from ..config.manager import get_config
+from ..llm.client import UnifiedLLMClient
 
-# Load environment variables from .env file
-load_dotenv()
+# Set tokenizer parallelism to avoid warnings in multiprocessing
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-max_tokens = 1000
-temperature = 0.5
+# Shared LLM client manager to avoid multiple model instances
+class SharedLLMManager:
+    _instance = None
+    _local_client = None
+    _remote_client = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def get_client(self, config):
+        """Get shared LLM client instance based on configuration."""
+        if config.is_local_backend():
+            with self._lock:  # Thread-safe client creation
+                if self._local_client is None:
+                    from ..llm.client import HuggingFaceClient
+                    client_kwargs = config.get_llm_client_kwargs()
+                    client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
+                    self._local_client = HuggingFaceClient(**client_kwargs)
+                    print(f"Created shared local LLM client: {self._local_client.model_name}")
+                return self._local_client
+        else:
+            # For remote clients, create separate instances (they're stateless)
+            from ..llm.client import RemoteLLMClient
+            client_kwargs = config.get_llm_client_kwargs()
+            client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
+            return RemoteLLMClient(**client_kwargs)
+
+# Global shared manager instance
+_shared_llm_manager = SharedLLMManager()
 
 class Agent:
     def __init__(self, agent_id: int, name: str, background: str, env: ConclaveEnv):
@@ -21,15 +52,17 @@ class Agent:
         self.vote_history = []
         self.logger = logging.getLogger(name)
         
-        api_key = os.environ.get("OPENROUTER_API_KEY")
-        if not api_key:
-            raise ValueError("OpenRouter API key not found")
+        # Get configuration
+        self.config = get_config()
+        
+        # Use shared LLM client to avoid multiple model instances
+        try:
+            self.llm_client = _shared_llm_manager.get_client(self.config)
+            self.logger.info(f"Agent {self.name} initialized with {self.config.get_backend_type()} backend, model: {self.llm_client.model_name}")
             
-        # Initialize OpenAI client with OpenRouter base URL
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key
-        )
+        except Exception as e:
+            self.logger.error(f"Failed to initialize LLM client for agent {self.name}: {e}")
+            raise
 
     def cast_vote(self) -> None:
         personal_vote_history = self.promptize_vote_history()
@@ -301,58 +334,163 @@ Be authentic to your character and background. Provide a meaningful contribution
             return None
 
     def _invoke_claude(self, prompt: str, tools: List[Dict] = [], tool_choice: str = None) -> Dict:
-        """Invoke Claude through OpenRouter."""
-        max_retries = 3
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                # Prepare the request parameters
-                request_params = {
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": max_tokens,
-                    "temperature": temperature
-                }
-                
-                # Add tools if provided
+        """Invoke LLM through the configured client."""
+        try:
+            # Create messages in OpenAI format
+            messages = [{"role": "user", "content": prompt}]
+            
+            # Check if using remote backend (supports native tool calls)
+            if self.config.is_remote_backend() and tools:
+                # Use native tool calling for remote backend
+                response = self._call_remote_with_tools(messages, tools, tool_choice)
+                return response
+            else:
+                # Use basic generation and parse JSON response manually for local backends
                 if tools:
-                    request_params["tools"] = tools
-                    
-                    # Add tool_choice if specified
-                    if tool_choice:
-                        request_params["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
+                    # Add instructions for JSON format to the prompt
+                    tool_instructions = self._format_tools_as_instructions(tools, tool_choice)
+                    messages[0]["content"] = f"{prompt}\n\n{tool_instructions}"
                 
-                response = self.client.chat.completions.create(**request_params)
+                response_text = self.llm_client.generate(messages)
                 
-                if not response or not response.choices:
-                    raise ValueError("Empty response from API")
-                    
-                return response.choices[0].message
+                if tools:
+                    # Try to parse JSON response for tool calls
+                    response = self._parse_tool_response(response_text, tools)
+                else:
+                    # Create a simple response object
+                    class SimpleResponse:
+                        def __init__(self, content):
+                            self.content = content
+                    response = SimpleResponse(response_text)
                 
-            except Exception as e:
-                error_str = str(e).lower()
-                
-                # Check for token-related errors - don't retry these
-                if any(error in error_str for error in [
-                    "insufficient_quota",
-                    "token limit",
-                    "credits depleted",
-                    "out of tokens",
-                    "no credits",
-                    "token balance"
-                ]):
-                    raise ValueError("OpenRouter tokens are depleted. Please try again later.")
-                
-                # For server errors (500), retry
-                if "500" in error_str or "internal server error" in error_str:
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        self.logger.warning(f"Server error, retrying ({retry_count}/{max_retries})")
-                        continue
-                
-                self.logger.error(f"Error invoking OpenRouter API: {e}")
-                raise
+                return response
+            
+        except Exception as e:
+            self.logger.error(f"Error invoking LLM: {e}")
+            raise
+    
+    def _call_remote_with_tools(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None):
+        """Call remote LLM with native tool support."""
+        try:
+            # Prepare the API call parameters
+            api_params = {
+                "model": self.llm_client.model_name,
+                "messages": messages,
+                "tools": tools,
+                **self.llm_client.generation_params
+            }
+            
+            if tool_choice:
+                # OpenAI expects object format for specific function
+                # Format: {"type": "function", "function": {"name": "function_name"}}
+                api_params["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
+            
+            # Call the OpenAI client directly
+            response = self.llm_client.client.chat.completions.create(**api_params)
+            
+            return response.choices[0].message
+            
+        except Exception as e:
+            self.logger.error(f"Error calling remote LLM with tools: {e}")
+            raise
+    
+    def _format_tools_as_instructions(self, tools: List[Dict], tool_choice: str = None) -> str:
+        """Format tools as instructions for models that don't support tool calling."""
+        if not tools:
+            return ""
+            
+        tool = tools[0]  # Use the first (and usually only) tool
+        function = tool.get('function', {})
+        name = function.get('name', 'unknown')
+        description = function.get('description', '')
+        parameters = function.get('parameters', {})
+        
+        instructions = f"\nPlease respond with a JSON object that contains:\n"
+        instructions += f"- function: \"{name}\"\n"
+        instructions += f"- parameters: an object with the required fields\n\n"
+        
+        if 'properties' in parameters:
+            instructions += "Required parameters:\n"
+            for param_name, param_info in parameters['properties'].items():
+                param_type = param_info.get('type', 'string')
+                param_desc = param_info.get('description', '')
+                instructions += f"- {param_name} ({param_type}): {param_desc}\n"
+        
+        # Add a specific example based on the function
+        if name == "cast_vote":
+            instructions += f"\nExample: {{\"function\": \"cast_vote\", \"parameters\": {{\"candidate\": 1, \"explanation\": \"good leadership qualities\"}}}}\n"
+        elif name == "speak_message":
+            instructions += f"\nExample: {{\"function\": \"speak_message\", \"parameters\": {{\"message\": \"I believe we need strong leadership...\"}}}}\n"
+        elif name == "evaluate_speaking_urgency":
+            instructions += f"\nExample: {{\"function\": \"evaluate_speaking_urgency\", \"parameters\": {{\"urgency_score\": 75, \"reasoning\": \"I have important concerns to share\"}}}}\n"
+        else:
+            instructions += f"\nExample: {{\"function\": \"{name}\", \"parameters\": {{\"key\": \"value\"}}}}\n"
+        
+        instructions += "\nYour response (JSON only):"
+        
+        return instructions
+    
+    def _parse_tool_response(self, response_text: str, tools: List[Dict]) -> Dict:
+        """Parse tool response from text for models without native tool support."""
+        try:
+            # Look for JSON in the response - handle nested braces properly
+            import re
+            
+            # Find the first complete JSON object
+            brace_count = 0
+            start_pos = response_text.find('{')
+            if start_pos == -1:
+                raise ValueError("No JSON object found")
+            
+            for i, char in enumerate(response_text[start_pos:], start_pos):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_text = response_text[start_pos:i+1]
+                        break
+            else:
+                raise ValueError("Incomplete JSON object")
+            
+            tool_data = json.loads(json_text)
+            
+            # Create a mock tool call response
+            class MockToolCall:
+                def __init__(self, function_name, arguments):
+                    self.function = MockFunction(function_name, arguments)
+            
+            class MockFunction:
+                def __init__(self, name, arguments):
+                    self.name = name
+                    self.arguments = json.dumps(arguments)
+            
+            class MockResponse:
+                def __init__(self, tool_call):
+                    self.tool_calls = [tool_call] if tool_call else []
+            
+            function_name = tool_data.get('function')
+            parameters = tool_data.get('parameters', {})
+            
+            if function_name:
+                tool_call = MockToolCall(function_name, parameters)
+                return MockResponse(tool_call)
+            
+            # If no JSON found, return empty response
+            class EmptyResponse:
+                def __init__(self):
+                    self.tool_calls = []
+                    self.content = response_text
+            
+            return EmptyResponse()
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to parse tool response: {e}")
+            class EmptyResponse:
+                def __init__(self):
+                    self.tool_calls = []
+                    self.content = response_text
+            return EmptyResponse()
 
     def promptize_vote_history(self) -> str:
         if self.vote_history:

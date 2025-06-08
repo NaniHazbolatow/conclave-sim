@@ -4,6 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from typing import Dict, List, Optional
+from ..config.manager import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,12 @@ class ConclaveEnv:
         self.discussionRound = 0
         # Track which agents participated in which discussion rounds
         self.agent_discussion_participation = {}
+        
+        # Get configuration for simulation parameters
+        self.config = get_config()
+        self.simulation_config = self.config.get_simulation_config()
+        self.max_discussion_rounds = self.simulation_config.get("max_discussion_rounds", 3)
+        self.max_speakers_per_round = self.simulation_config.get("max_speakers_per_round", 5)
 
     def cast_vote(self, candidate_id: int) -> None:
         with self.voting_lock:
@@ -42,6 +49,13 @@ class ConclaveEnv:
         print(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
         print(f"Total votes: {sum(self.votingBuffer.values())}")
         threshold = self.num_agents * 2 / 3
+        
+        # Check if any votes were cast
+        if not voting_results:
+            print("No votes were cast in this round.")
+            self.votingBuffer.clear()
+            return False
+            
         print(f"most votes: {voting_results[0][1]}, threshold: {threshold}")
 
         # if the top candidate has more than 2/3 of the votes

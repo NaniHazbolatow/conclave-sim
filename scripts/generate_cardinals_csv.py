@@ -61,7 +61,7 @@ def fetch_table():
 
 def main():
     df = fetch_table()
-    out_name = "cardinal_electors_2025.csv"
+    out_name = "../data/cardinal_electors_2025.csv"
     df.to_csv(out_name, index=False)
     print(f"Wrote {len(df)} rows to {out_name}")
 

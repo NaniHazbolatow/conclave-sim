@@ -3,8 +3,8 @@
 Test script to verify that agents only see discussions they participated in.
 """
 
-from environments.conclave_env import ConclaveEnv
-from agents.base import Agent
+from conclave.environments.conclave_env import ConclaveEnv
+from conclave.agents.base import Agent
 
 def test_discussion_participation():
     print("Testing discussion participation...")
