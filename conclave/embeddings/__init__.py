@@ -17,7 +17,7 @@ class EmbeddingClient:
     """Local vector embedding client using sentence-transformers."""
     
     def __init__(self, 
-                 model_name: str = "all-MiniLM-L6-v2",
+                 model_name: str = "intfloat/e5-large-v2",
                  device: Optional[str] = None,
                  cache_embeddings: bool = True):
         """

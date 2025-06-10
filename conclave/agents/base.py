@@ -10,6 +10,8 @@ from ..config.prompts import get_prompt_manager
 # Set tokenizer parallelism to avoid warnings in multiprocessing
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+logger = logging.getLogger(__name__)
+
 # Shared LLM client manager to avoid multiple model instances
 class SharedLLMManager:
     _instance = None
@@ -51,6 +53,11 @@ class Agent:
         self.env = env
         self.vote_history = []
         self.logger = logging.getLogger(name)
+        
+        # Internal stance tracking
+        self.internal_stance = None  # Current internal stance as plain text
+        self.stance_history = []     # History of stance updates with timestamps
+        self.last_stance_update = None  # When stance was last generated
         
         # Get configuration and prompt manager
         self.config = get_config()
@@ -220,7 +227,25 @@ class Agent:
 
     def promptize_vote_history(self) -> str:
         if self.vote_history:
-            vote_history_str = "\n".join([f"In round {i+1}, you voted for {self.env.agents[vote['vote']].name} for the following reason:\n{vote['reasoning']}" for i,vote in enumerate(self.vote_history)])
+            vote_history_entries = []
+            for i, vote in enumerate(self.vote_history):
+                try:
+                    # Ensure vote is a dictionary and has the expected keys
+                    if isinstance(vote, dict) and 'vote' in vote and 'reasoning' in vote:
+                        vote_idx = vote['vote']
+                        if isinstance(vote_idx, int) and 0 <= vote_idx < len(self.env.agents):
+                            candidate_name = self.env.agents[vote_idx].name
+                            reasoning = vote['reasoning']
+                            vote_history_entries.append(f"In round {i+1}, you voted for {candidate_name} for the following reason:\n{reasoning}")
+                        else:
+                            vote_history_entries.append(f"In round {i+1}, you cast an invalid vote: {vote_idx}")
+                    else:
+                        vote_history_entries.append(f"In round {i+1}, vote data was malformed: {vote}")
+                except Exception as e:
+                    logger.error(f"Error processing vote history entry {i}: {vote}, error: {e}")
+                    vote_history_entries.append(f"In round {i+1}, error processing vote")
+            
+            vote_history_str = "\n".join(vote_history_entries)
             return f"Your vote history:\n{vote_history_str}\n"
         else:
             return ""
@@ -239,3 +264,133 @@ class Agent:
             return f"Previous ballot results:\n{voting_results_history_str}"
         else:
             return ""
+
+    def generate_internal_stance(self) -> str:
+        """
+        Generate an internal stance based on the agent's background, discussions, and voting history.
+        
+        Returns:
+            The generated internal stance as plain text
+        """
+        import datetime
+        
+        personal_vote_history = self.promptize_vote_history()
+        ballot_results_history = self.promptize_voting_results_history()
+        discussion_history = self.env.get_discussion_history(self.agent_id)
+        
+        # Use prompt manager to get formatted prompt
+        prompt = self.prompt_manager.get_internal_stance_prompt(
+            agent_name=self.name,
+            background=self.background,
+            personal_vote_history=personal_vote_history,
+            ballot_results_history=ballot_results_history,
+            discussion_history=discussion_history
+        )
+        
+        try:
+            # Define stance generation tool with strict word limit
+            tools = [
+                {
+                    "type": "function", 
+                    "function": {
+                        "name": "generate_stance",
+                        "description": "Generate a concise internal stance on the papal election",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "stance": {
+                                    "type": "string",
+                                    "description": "Your internal stance (75-125 words ONLY). Must be direct, concrete, and avoid diplomatic language. Focus on specific positions and candidate preferences."
+                                }
+                            },
+                            "required": ["stance"]
+                        }
+                    }
+                }
+            ]
+            
+            # Generate stance using tool calling
+            messages = [{"role": "user", "content": prompt}]
+            result = self.tool_caller.call_tool(messages, tools, tool_choice="generate_stance")
+            
+            if result.success and result.arguments:
+                stance = result.arguments.get("stance", "")
+                
+                # Validate word count (strict enforcement)
+                word_count = len(stance.split())
+                if word_count > 150:
+                    self.logger.warning(f"Stance too long ({word_count} words), truncating to 125 words...")
+                    words = stance.split()[:125]
+                    stance = " ".join(words)
+                elif word_count < 50:
+                    self.logger.warning(f"Stance too short ({word_count} words). This may affect embedding quality.")
+                
+                # Update internal state
+                timestamp = datetime.datetime.now()
+                self.internal_stance = stance
+                self.last_stance_update = timestamp
+                
+                # Add to stance history
+                stance_entry = {
+                    "timestamp": timestamp,
+                    "stance": stance,
+                    "voting_round": self.env.votingRound,
+                    "discussion_round": self.env.discussionRound
+                }
+                self.stance_history.append(stance_entry)
+                
+                # Enhanced logging with full stance content
+                self.logger.info(f"{self.name} generated internal stance (V{self.env.votingRound}.D{self.env.discussionRound})")
+                self.logger.info(f"=== INTERNAL STANCE: {self.name} ===")
+                self.logger.info(f"Round: Voting {self.env.votingRound}, Discussion {self.env.discussionRound}")
+                self.logger.info(f"Word count: {word_count}")
+                self.logger.info(f"Stance Content:")
+                self.logger.info(stance)
+                self.logger.info(f"=== END STANCE: {self.name} ===")
+                
+                return stance
+            else:
+                self.logger.error(f"Failed to generate stance: {result.error}")
+                return ""
+            
+        except Exception as e:
+            self.logger.error(f"Error generating internal stance for {self.name}: {e}")
+            return ""
+    
+    def get_internal_stance(self) -> str:
+        """
+        Get the current internal stance, generating one if it doesn't exist.
+        
+        Returns:
+            The agent's current internal stance
+        """
+        if self.internal_stance is None:
+            return self.generate_internal_stance()
+        return self.internal_stance
+    
+    def should_update_stance(self) -> bool:
+        """
+        Determine if the agent should update their internal stance.
+        
+        Returns:
+            True if stance should be updated, False otherwise
+        """
+        # Update stance if:
+        # 1. No stance exists yet
+        # 2. There's been new voting or discussion activity since last update
+        if self.internal_stance is None:
+            return True
+            
+        if self.last_stance_update is None:
+            return True
+            
+        # Check if there's been new activity since last stance update
+        current_activity = (self.env.votingRound, self.env.discussionRound)
+        
+        # If we have stance history, compare with last recorded activity
+        if self.stance_history:
+            last_entry = self.stance_history[-1]
+            last_activity = (last_entry["voting_round"], last_entry["discussion_round"])
+            return current_activity != last_activity
+        
+        return True

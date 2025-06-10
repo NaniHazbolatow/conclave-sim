@@ -38,3 +38,25 @@ discussion_prompt: |
   4. Share your perspectives on what the Church needs
 
   Be authentic to your character and background. Provide a meaningful contribution of {discussion_min_words}-{discussion_max_words} words.
+
+internal_stance_prompt: |
+  You are {agent_name}. Based on your background, recent discussions, and voting patterns, provide your concise internal stance on the papal election.
+  
+  Your background: {background}
+  {personal_vote_history}
+  {ballot_results_history}
+  {discussion_history}
+  
+  Provide a direct, focused stance covering:
+  
+  PREFERRED CANDIDATE: Name your top choice and why (1 sentence)
+  
+  CHURCH PRIORITIES: What should the Church focus on? (1-2 key priorities, be specific)
+  
+  THEOLOGICAL POSITION: Are you traditional, moderate, or progressive? Why? (1 sentence)
+  
+  CONCERNS: What worries you most about current candidates or Church direction? (1 sentence)
+  
+  INFLUENCE: How have recent discussions changed your thinking? (1 sentence)
+  
+  Keep response 75-125 words. Be direct and specific. Avoid diplomatic language or hedging. State clear positions.

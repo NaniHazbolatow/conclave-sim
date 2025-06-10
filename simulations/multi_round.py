@@ -46,6 +46,10 @@ def main():
     # Set the number of agents in the environment
     env.num_agents = len(env.agents)
     logger.info(f"\n{env.list_candidates_for_prompt(randomize=False)}")
+    
+    # Generate initial internal stances for all agents before starting
+    env.generate_initial_stances()
+    
     winner_found = False
     while not winner_found:
         winner_found = env.run_voting_round()

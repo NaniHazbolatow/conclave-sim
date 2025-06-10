@@ -78,6 +78,20 @@ class PromptManager:
         return template.format(**kwargs)
     
 
+    def get_internal_stance_prompt(self, **kwargs) -> str:
+        """
+        Get the internal stance prompt with variable substitution.
+        
+        Args:
+            **kwargs: Variables to substitute in the prompt template
+            
+        Returns:
+            Formatted internal stance prompt
+        """
+        template = self.prompts.get("internal_stance_prompt", "")
+        return template.format(**kwargs)
+    
+
     def reload_prompts(self):
         """Reload prompt templates from file."""
         self.prompts = self._load_prompts()

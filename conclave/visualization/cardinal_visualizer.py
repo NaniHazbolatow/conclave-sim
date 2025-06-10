@@ -2,8 +2,8 @@
 """
 Cardinal visualization module for the conclave simulation.
 
-This module provides comprehensive visualization tools for displaying cardinal positions,
-ideological clusters, and embedding spaces using PCA and other dimensionality reduction techniques.
+This module provides visualization tools for displaying cardinal stance progression
+across discussion rounds using embedding-based position tracking.
 """
 
 import numpy as np
@@ -11,9 +11,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-import umap
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional
 import logging
+import os
+import json
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -22,357 +24,217 @@ class CardinalVisualizer:
     Visualizes cardinal positions and ideological clusters in 2D space.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config):
         """
         Initialize the visualizer with configuration settings.
         
         Args:
-            config: Configuration dictionary from config.yaml
+            config: ConfigManager instance or configuration dictionary
         """
         self.config = config
-        self.viz_config = config.get('visualization', {})
+        
+        # Handle both ConfigManager objects and dictionaries
+        if hasattr(config, 'get_visualization_config'):
+            # ConfigManager object
+            self.viz_config = config.get_visualization_config()
+        else:
+            # Dictionary
+            self.viz_config = config.get('visualization', {})
+            
         self.reduction_method = self.viz_config.get('reduction_method', 'pca')
         self.plot_config = self.viz_config.get('plot', {})
         
         # Set up matplotlib style
         plt.style.use('seaborn-v0_8')
         sns.set_palette("husl")
-        
-    def reduce_dimensions(self, embeddings: np.ndarray, method: Optional[str] = None) -> np.ndarray:
-        """
-        Reduce high-dimensional embeddings to 2D coordinates.
-        
-        Args:
-            embeddings: High-dimensional embedding vectors
-            method: Reduction method ('pca', 'tsne', 'umap'). Uses config default if None.
-            
-        Returns:
-            2D coordinates array
-        """
-        if method is None:
-            method = self.reduction_method
-            
-        n_samples = len(embeddings)
-        
-        if method == 'pca':
-            pca_config = self.viz_config.get('pca', {})
-            reducer = PCA(
-                n_components=2,
-                random_state=pca_config.get('random_state', 42)
-            )
-            
-        elif method == 'tsne':
-            tsne_config = self.viz_config.get('tsne', {})
-            reducer = TSNE(
-                n_components=2,
-                random_state=tsne_config.get('random_state', 42),
-                perplexity=min(tsne_config.get('perplexity', 5), n_samples - 1),
-                n_iter=tsne_config.get('n_iter', 1000)
-            )
-            
-        elif method == 'umap':
-            umap_config = self.viz_config.get('umap', {})
-            reducer = umap.UMAP(
-                n_components=2,
-                random_state=umap_config.get('random_state', 42),
-                n_neighbors=min(umap_config.get('n_neighbors', 5), n_samples - 1),
-                min_dist=umap_config.get('min_dist', 0.1)
-            )
-            
-        else:
-            raise ValueError(f"Unknown reduction method: {method}")
-            
-        logger.info(f"Applying {method.upper()} dimensionality reduction...")
-        coords_2d = reducer.fit_transform(embeddings)
-        
-        return coords_2d
     
-    def normalize_coordinates(self, coords_2d: np.ndarray) -> np.ndarray:
+    def generate_stance_visualization_from_env(self, env, output_dir: str = "output"):
         """
-        Normalize 2D coordinates to 0-100 grid scale.
+        Generate and save stance progression visualization directly from environment.
         
         Args:
-            coords_2d: Raw 2D coordinates
-            
-        Returns:
-            Normalized coordinates in 0-100 range
+            env: The simulation environment with agents
+            output_dir: Directory to save visualizations
         """
-        grid_config = self.viz_config.get('grid', {})
-        grid_size = grid_config.get('size', 100)
-        jitter = grid_config.get('jitter', 2.0)
+        logger.info("Generating stance progression visualization from environment...")
         
-        # Normalize to 0-grid_size range
-        x_coords = coords_2d[:, 0]
-        y_coords = coords_2d[:, 1]
-        
-        x_norm = ((x_coords - x_coords.min()) / (x_coords.max() - x_coords.min())) * grid_size
-        y_norm = ((y_coords - y_coords.min()) / (y_coords.max() - y_coords.min())) * grid_size
-        
-        # Add small jitter to avoid overlaps
-        if jitter > 0:
-            x_norm += np.random.normal(0, jitter, len(x_norm))
-            y_norm += np.random.normal(0, jitter, len(y_norm))
+        try:
+            # Import here to avoid circular imports
+            from conclave.embeddings import get_default_client
             
-            # Clamp to valid range
-            x_norm = np.clip(x_norm, 0, grid_size)
-            y_norm = np.clip(y_norm, 0, grid_size)
-        
-        return np.column_stack([x_norm, y_norm])
+            # Collect all agent stances and their history
+            stance_evolution = {}
+            
+            for agent in env.agents:
+                if hasattr(agent, 'stance_history') and agent.stance_history:
+                    stance_evolution[agent.name] = []
+                    for i, stance_entry in enumerate(agent.stance_history):
+                        # Handle both string stances and dictionary stance entries
+                        if isinstance(stance_entry, dict):
+                            stance_text = stance_entry.get("stance", "")
+                        else:
+                            stance_text = stance_entry
+                        
+                        stance_evolution[agent.name].append({
+                            "round": i,
+                            "stance": stance_text,
+                            "word_count": len(stance_text.split()) if stance_text else 0
+                        })
+            
+            if not stance_evolution:
+                logger.warning("No stance evolution data found. Skipping visualization.")
+                return
+            
+            # Generate embeddings for stance evolution
+            embedding_client = get_default_client()
+            cardinal_names = list(stance_evolution.keys())
+            round_embeddings = {}
+            
+            # Determine which rounds we have data for
+            rounds = set()
+            for cardinal_data in stance_evolution.values():
+                for entry in cardinal_data:
+                    rounds.add(entry["round"])
+            
+            rounds = sorted(rounds)
+            logger.info(f"Found stance data for rounds: {rounds}")
+            
+            # Generate embeddings for each round
+            for round_num in rounds:
+                stance_texts = []
+                
+                for cardinal_name in cardinal_names:
+                    # Find stance for this round
+                    for entry in stance_evolution[cardinal_name]:
+                        if entry["round"] == round_num:
+                            stance_texts.append(entry["stance"])
+                            break
+                
+                if stance_texts:
+                    embeddings = embedding_client.get_embeddings(stance_texts)
+                    round_embeddings[round_num] = embeddings
+                    logger.info(f"Round {round_num}: Generated embeddings for {len(stance_texts)} stances")
+            
+            if not round_embeddings:
+                logger.warning("No embeddings generated. Skipping visualization.")
+                return
+            
+            # Generate only the main stance progression visualization
+            self.visualize_stance_progression(round_embeddings, cardinal_names, stance_evolution, output_dir)
+            
+            logger.info(f"Stance visualization complete! Generated progression visualization for rounds: {list(round_embeddings.keys())}")
+            
+        except Exception as e:
+            logger.error(f"Failed to generate stance visualization: {e}")
+            print(f"⚠️ Stance visualization failed: {e}")
     
-    def create_ideological_visualization(
-        self, 
-        embeddings: np.ndarray, 
-        cardinal_names: List[str],
-        cardinal_categories: Optional[Dict[str, str]] = None,
-        title: str = "Cardinal Ideological Positioning"
-    ) -> plt.Figure:
+    def visualize_stance_progression(self, round_embeddings: Dict[int, np.ndarray], cardinal_names: List[str], 
+                                   stance_evolution: Dict[str, List[Dict]], output_dir: str = "output"):
         """
-        Create a comprehensive visualization of cardinal ideological positions.
-        
-        Args:
-            embeddings: High-dimensional embedding vectors
-            cardinal_names: List of cardinal names
-            cardinal_categories: Optional mapping of cardinal names to categories
-            title: Plot title
-            
-        Returns:
-            Matplotlib figure object
+        Create visualizations showing stance progression across rounds with connected dots.
         """
-        # Reduce dimensions
-        coords_2d = self.reduce_dimensions(embeddings)
-        coords_norm = self.normalize_coordinates(coords_2d)
+        logger.info("Creating stance progression visualizations...")
         
-        # Set up plot configuration
-        fig_size = self.plot_config.get('figure_size', [12, 8])
-        point_size = self.plot_config.get('point_size', 120)
-        font_size = self.plot_config.get('font_size', 10)
-        alpha = self.plot_config.get('alpha', 0.8)
-        colormap = self.plot_config.get('colormap', 'tab10')
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
         
-        # Create figure
-        fig, ax = plt.subplots(figsize=fig_size)
+        # Set up the plot style
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
         
-        # Color points by category if provided
-        if cardinal_categories:
-            categories = [cardinal_categories.get(name, 'Unknown') for name in cardinal_names]
-            unique_categories = list(set(categories))
-            color_map = plt.cm.get_cmap(colormap)
-            colors = [color_map(i / len(unique_categories)) for i in range(len(unique_categories))]
-            
-            for i, category in enumerate(unique_categories):
-                mask = [cat == category for cat in categories]
-                x_cat = coords_norm[mask, 0]
-                y_cat = coords_norm[mask, 1]
-                names_cat = [name for name, cat in zip(cardinal_names, categories) if cat == category]
-                
-                scatter = ax.scatter(
-                    x_cat, y_cat, 
-                    c=[colors[i]] * len(x_cat),
-                    s=point_size, 
-                    alpha=alpha,
-                    label=category,
-                    edgecolors='black',
-                    linewidth=0.5
-                )
-                
-                # Add labels
-                for j, name in enumerate(names_cat):
-                    ax.annotate(
-                        name, 
-                        (x_cat[j], y_cat[j]), 
-                        xytext=(5, 5),
-                        textcoords='offset points', 
-                        fontsize=font_size, 
-                        alpha=0.9,
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor=colors[i], alpha=0.3)
-                    )
-            
-            ax.legend(title="Cardinal Categories", loc='upper right')
-            
+        # Prepare data for visualization
+        all_embeddings = []
+        all_round_labels = []
+        all_cardinal_labels = []
+        
+        # Collect all embeddings across rounds
+        for round_num in sorted(round_embeddings.keys()):
+            embeddings = round_embeddings[round_num]
+            for i, embedding in enumerate(embeddings):
+                all_embeddings.append(embedding)
+                all_round_labels.append(round_num)
+                all_cardinal_labels.append(cardinal_names[i] if i < len(cardinal_names) else f"Cardinal_{i}")
+        
+        all_embeddings = np.array(all_embeddings)
+        
+        # Reduce dimensionality for visualization
+        logger.info("Reducing dimensionality for visualization...")
+        
+        # Use PCA first to reduce dimensions if needed, then t-SNE for final visualization
+        max_pca_components = min(50, all_embeddings.shape[0] - 1, all_embeddings.shape[1] - 1)
+        if all_embeddings.shape[1] > max_pca_components and max_pca_components > 2:
+            pca = PCA(n_components=max_pca_components)
+            embeddings_pca = pca.fit_transform(all_embeddings)
+            logger.info(f"PCA reduced dimensions from {all_embeddings.shape[1]} to {max_pca_components}")
         else:
-            # Simple scatter plot without categories
-            scatter = ax.scatter(
-                coords_norm[:, 0], coords_norm[:, 1],
-                c=range(len(cardinal_names)),
-                cmap=colormap,
-                s=point_size,
-                alpha=alpha,
-                edgecolors='black',
-                linewidth=0.5
-            )
-            
-            # Add labels
-            for i, name in enumerate(cardinal_names):
-                ax.annotate(
-                    name, 
-                    (coords_norm[i, 0], coords_norm[i, 1]), 
-                    xytext=(5, 5),
-                    textcoords='offset points', 
-                    fontsize=font_size, 
-                    alpha=0.9
-                )
+            embeddings_pca = all_embeddings
+            logger.info("Skipping PCA - using original embeddings")
         
-        # Customize plot
-        ax.set_title(f'{title} ({self.reduction_method.upper()})', fontsize=16, fontweight='bold')
-        ax.set_xlabel('Ideological Dimension 1', fontsize=12)
-        ax.set_ylabel('Ideological Dimension 2', fontsize=12)
+        # Apply t-SNE for 2D visualization with appropriate perplexity
+        perplexity = min(5, max(1, len(all_embeddings) - 1))
+        tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity)
+        embeddings_2d = tsne.fit_transform(embeddings_pca)
+        
+        # Create the progression visualization
+        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        
+        # Plot points for each round and cardinal
+        unique_cardinals = list(set(all_cardinal_labels))
+        
+        for i, cardinal in enumerate(unique_cardinals):
+            cardinal_color = colors[i % len(colors)]
+            
+            # Get indices for this cardinal across all rounds
+            cardinal_indices = [j for j, name in enumerate(all_cardinal_labels) if name == cardinal]
+            cardinal_rounds = [all_round_labels[j] for j in cardinal_indices]
+            cardinal_positions = embeddings_2d[cardinal_indices]
+            
+            # Plot the progression line
+            if len(cardinal_positions) > 1:
+                ax.plot(cardinal_positions[:, 0], cardinal_positions[:, 1], 
+                       color=cardinal_color, linewidth=2, alpha=0.7, 
+                       label=f"{cardinal} progression")
+            
+            # Plot points for each round
+            for j, (pos, round_num) in enumerate(zip(cardinal_positions, cardinal_rounds)):
+                # Size increases with round number
+                size = 100 + (round_num * 50)
+                ax.scatter(pos[0], pos[1], 
+                          color=cardinal_color, 
+                          s=size,
+                          alpha=0.8,
+                          edgecolors='black',
+                          linewidth=1,
+                          zorder=5)
+                
+                # Add round number as text
+                ax.annotate(f"R{round_num}", 
+                           (pos[0], pos[1]), 
+                           xytext=(5, 5), 
+                           textcoords='offset points',
+                           fontsize=8,
+                           fontweight='bold')
+        
+        # Customize the plot
+        ax.set_title("Cardinal Stance Progression Across Rounds", fontsize=16, fontweight='bold')
+        ax.set_xlabel("Stance Dimension 1", fontsize=12)
+        ax.set_ylabel("Stance Dimension 2", fontsize=12)
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(-5, 105)
-        ax.set_ylim(-5, 105)
         
-        # Add explained variance for PCA
-        if self.reduction_method == 'pca':
-            pca = PCA(n_components=2, random_state=42)
-            pca.fit(embeddings)
-            variance_ratio = pca.explained_variance_ratio_
-            ax.text(
-                0.02, 0.98, 
-                f'PC1: {variance_ratio[0]:.1%}\nPC2: {variance_ratio[1]:.1%}',
-                transform=ax.transAxes,
-                verticalalignment='top',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8)
-            )
+        # Add explanation text
+        explanation = ("Points show cardinal positions in stance space.\n"
+                      "Lines connect the same cardinal across rounds.\n"
+                      "Larger points = later rounds.")
+        ax.text(0.02, 0.98, explanation, transform=ax.transAxes, 
+               verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         
         plt.tight_layout()
-        return fig
-    
-    def analyze_clusters(
-        self, 
-        embeddings: np.ndarray, 
-        cardinal_names: List[str],
-        cardinal_categories: Dict[str, str]
-    ) -> Dict[str, Any]:
-        """
-        Analyze ideological clusters and their separation.
         
-        Args:
-            embeddings: High-dimensional embedding vectors
-            cardinal_names: List of cardinal names
-            cardinal_categories: Mapping of cardinal names to categories
-            
-        Returns:
-            Dictionary containing cluster analysis results
-        """
-        # Reduce dimensions
-        coords_2d = self.reduce_dimensions(embeddings)
-        coords_norm = self.normalize_coordinates(coords_2d)
+        # Save the main progression plot
+        main_viz_path = os.path.join(output_dir, "stance_progression.png")
+        fig.savefig(main_viz_path, dpi=300, bbox_inches='tight')
+        logger.info(f"Saved stance progression visualization to: {main_viz_path}")
         
-        # Group by categories
-        category_positions = {}
-        for name, category in cardinal_categories.items():
-            if name in cardinal_names:
-                idx = cardinal_names.index(name)
-                if category not in category_positions:
-                    category_positions[category] = []
-                category_positions[category].append(coords_norm[idx])
+        plt.close('all')
         
-        # Calculate cluster centers
-        cluster_centers = {}
-        for category, positions in category_positions.items():
-            if positions:
-                positions_array = np.array(positions)
-                center = np.mean(positions_array, axis=0)
-                cluster_centers[category] = center
-        
-        # Calculate pairwise distances between cluster centers
-        cluster_distances = {}
-        categories = list(cluster_centers.keys())
-        for i, cat1 in enumerate(categories):
-            for j, cat2 in enumerate(categories[i+1:], i+1):
-                center1 = cluster_centers[cat1]
-                center2 = cluster_centers[cat2]
-                distance = np.linalg.norm(center1 - center2)
-                cluster_distances[f"{cat1} - {cat2}"] = distance
-        
-        # Analysis results
-        analysis_config = self.viz_config.get('analysis', {})
-        threshold = analysis_config.get('cluster_distance_threshold', 30)
-        
-        return {
-            'cluster_centers': cluster_centers,
-            'cluster_distances': cluster_distances,
-            'good_separation': all(d > threshold for d in cluster_distances.values()),
-            'coordinates': {name: coords_norm[i].tolist() for i, name in enumerate(cardinal_names)}
-        }
-    
-    def create_comparison_plot(
-        self, 
-        embeddings: np.ndarray, 
-        cardinal_names: List[str],
-        cardinal_categories: Optional[Dict[str, str]] = None
-    ) -> plt.Figure:
-        """
-        Create a comparison plot showing all three reduction methods.
-        
-        Args:
-            embeddings: High-dimensional embedding vectors
-            cardinal_names: List of cardinal names
-            cardinal_categories: Optional mapping of cardinal names to categories
-            
-        Returns:
-            Matplotlib figure object with subplots
-        """
-        methods = ['pca', 'tsne', 'umap']
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        
-        for idx, method in enumerate(methods):
-            # Reduce dimensions with specific method
-            coords_2d = self.reduce_dimensions(embeddings, method)
-            coords_norm = self.normalize_coordinates(coords_2d)
-            
-            ax = axes[idx]
-            
-            # Color points by category if provided
-            if cardinal_categories:
-                categories = [cardinal_categories.get(name, 'Unknown') for name in cardinal_names]
-                unique_categories = list(set(categories))
-                colors = plt.cm.tab10(np.linspace(0, 1, len(unique_categories)))
-                
-                for i, category in enumerate(unique_categories):
-                    mask = [cat == category for cat in categories]
-                    x_cat = coords_norm[mask, 0]
-                    y_cat = coords_norm[mask, 1]
-                    
-                    ax.scatter(
-                        x_cat, y_cat,
-                        c=[colors[i]] * len(x_cat),
-                        s=100,
-                        alpha=0.7,
-                        label=category,
-                        edgecolors='black',
-                        linewidth=0.5
-                    )
-            else:
-                ax.scatter(
-                    coords_norm[:, 0], coords_norm[:, 1],
-                    c=range(len(cardinal_names)),
-                    cmap='tab10',
-                    s=100,
-                    alpha=0.7,
-                    edgecolors='black',
-                    linewidth=0.5
-                )
-            
-            # Add labels
-            for i, name in enumerate(cardinal_names):
-                ax.annotate(
-                    name, 
-                    (coords_norm[i, 0], coords_norm[i, 1]), 
-                    xytext=(3, 3),
-                    textcoords='offset points', 
-                    fontsize=8
-                )
-            
-            ax.set_title(f'{method.upper()}', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Dimension 1')
-            ax.set_ylabel('Dimension 2')
-            ax.grid(True, alpha=0.3)
-            ax.set_xlim(-5, 105)
-            ax.set_ylim(-5, 105)
-            
-            if idx == 0 and cardinal_categories:
-                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        
-        plt.suptitle('Cardinal Positioning Comparison', fontsize=16, fontweight='bold')
-        plt.tight_layout()
-        return fig
+        return round_embeddings

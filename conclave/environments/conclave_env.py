@@ -152,6 +152,9 @@ class ConclaveEnv:
             print(f"\n🔸 {agent_name}:")
             print(f"{message}")
         print("─" * 80)
+        
+        # Generate internal stances after discussion
+        self.update_internal_stances()
 
     def list_candidates_for_prompt(self, randomize: bool = True) -> str:
         indices = list(range(self.num_agents))
@@ -201,3 +204,83 @@ class ConclaveEnv:
                 history_str += round_str + "\n"
 
         return history_str
+    
+    def update_internal_stances(self) -> None:
+        """
+        Update internal stances for all agents who should update them.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from tqdm import tqdm
+        
+        # Find agents that should update their stance
+        agents_to_update = [agent for agent in self.agents if agent.should_update_stance()]
+        
+        if not agents_to_update:
+            return
+        
+        logger.info(f"Updating internal stances for {len(agents_to_update)} agents...")
+        
+        # Update stances in parallel
+        with ThreadPoolExecutor(max_workers=min(4, len(agents_to_update))) as executor:
+            futures = [executor.submit(agent.generate_internal_stance) for agent in agents_to_update]
+            # Wait for all futures to complete
+            for future in tqdm(futures, desc="Generating Stances", total=len(futures), disable=True):
+                future.result()  # This blocks until the task completes
+        
+        # Log completion and summary
+        updated_count = sum(1 for agent in agents_to_update if agent.internal_stance)
+        logger.info(f"Internal stance update completed: {updated_count}/{len(agents_to_update)} agents updated")
+        
+        # Log stance summary for this round
+        logger.info(f"=== STANCE UPDATE SUMMARY (V{self.votingRound}.D{self.discussionRound}) ===")
+        for agent in agents_to_update:
+            if agent.internal_stance:
+                stance_preview = agent.internal_stance[:100].replace('\n', ' ')
+                logger.info(f"{agent.name}: {stance_preview}...")
+        logger.info("=== END STANCE SUMMARY ===")
+    
+    def get_all_stances(self) -> Dict[str, str]:
+        """
+        Get all current internal stances from agents.
+        
+        Returns:
+            Dictionary mapping agent names to their current stances
+        """
+        stances = {}
+        for agent in self.agents:
+            if agent.internal_stance:
+                stances[agent.name] = agent.internal_stance
+        return stances
+    
+    def get_stance_embeddings(self) -> Dict[str, str]:
+        """
+        Get all current internal stances for embedding analysis.
+        
+        Returns:
+            Dictionary mapping agent names to their current stances (for embedding)
+        """
+        return self.get_all_stances()
+
+    def generate_initial_stances(self) -> None:
+        """
+        Generate initial internal stances for all agents before the simulation begins.
+        This should be called once after all agents are added to the environment.
+        """
+        logger.info(f"Generating initial internal stances for {len(self.agents)} agents...")
+        
+        # Generate initial stances in parallel
+        with ThreadPoolExecutor(max_workers=min(4, len(self.agents))) as executor:
+            futures = [executor.submit(agent.generate_internal_stance) for agent in self.agents]
+            # Wait for all futures to complete
+            for future in tqdm(futures, desc="Generating Initial Stances", total=len(futures), disable=True):
+                future.result()  # This blocks until the task completes
+        
+        logger.info("Initial internal stances generated for all agents")
+        
+        # Log initial stance summary
+        stances = self.get_all_stances()
+        logger.info(f"=== INITIAL STANCES SUMMARY ({len(stances)} agents) ===")
+        for name, stance in stances.items():
+            stance_preview = stance[:100].replace('\n', ' ')
+            logger.info(f"{name}: {stance_preview}...")
+        logger.info("=== END INITIAL STANCES SUMMARY ===")

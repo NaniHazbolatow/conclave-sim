@@ -161,6 +161,10 @@ class ConfigManager:
         """Get the maximum word count for discussion contributions."""
         return self.get_simulation_config().get("discussion_length", {}).get("max_words", 300)
     
+    def get_visualization_config(self) -> Dict[str, Any]:
+        """Get the visualization configuration."""
+        return self.config.get("visualization", {})
+    
     def is_local_backend(self) -> bool:
         """Check if the backend is set to local."""
         return self.get_backend_type() == "local"

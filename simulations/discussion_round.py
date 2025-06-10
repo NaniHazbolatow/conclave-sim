@@ -1,5 +1,4 @@
 import sys
-import sys
 import os
 from pathlib import Path
 import warnings
@@ -14,6 +13,7 @@ sys.path.insert(0, str(project_root))
 from conclave.environments.conclave_env import ConclaveEnv
 from conclave.agents.base import Agent
 from conclave.config.manager import get_config
+from conclave.visualization.cardinal_visualizer import CardinalVisualizer
 import pandas as pd
 import logging
 import datetime
@@ -75,6 +75,9 @@ def main():
         logger.info(f"Loaded {env.num_agents} cardinals for the simulation")
         logger.info(f"\n{env.list_candidates_for_prompt(randomize=False)}")
 
+        # Generate initial internal stances for all agents before starting
+        env.generate_initial_stances()
+
         election_round = 0
         winner_found = False
         
@@ -87,6 +90,8 @@ def main():
                 logger.info(f"\n--- Discussion Cycle {discussion_num} ---")
                 # Run a discussion round with configured number of speakers
                 env.run_discussion_round(num_speakers=max_speakers_per_round)
+                # Update stances after each discussion
+                env.update_internal_stances()
             
             # After all discussions, run voting
             winner_found = env.run_voting_round()
@@ -98,6 +103,10 @@ def main():
         else:
             print(f"❌ CONCLAVE INCOMPLETE")
             print(f"No winner found after {max_election_rounds} election rounds. Simulation ended without papal election.")
+        
+        # Generate stance progression visualization using CardinalVisualizer
+        visualizer = CardinalVisualizer(config)
+        visualizer.generate_stance_visualization_from_env(env)
     
     finally:
         # Restore the original working directory
