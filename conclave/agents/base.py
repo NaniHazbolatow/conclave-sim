@@ -340,7 +340,7 @@ Be authentic to your character and background. Provide a meaningful contribution
             messages = [{"role": "user", "content": prompt}]
             
             # Check if using remote backend (supports native tool calls)
-            if self.config.is_remote_backend() and tools:
+            if self.config.get_backend_type() == 'remote' and tools:
                 # Use native tool calling for remote backend
                 response = self._call_remote_with_tools(messages, tools, tool_choice)
                 return response

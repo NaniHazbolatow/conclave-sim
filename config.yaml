@@ -22,7 +22,8 @@ llm:
     # - For powerful GPUs: "Qwen/Qwen2.5-3B-Instruct" 
     # - For limited memory: "Qwen/Qwen2.5-1.5B-Instruct"
     model_name: "Qwen/Qwen2.5-1.5B-Instruct"
-    
+    #model_name: "meta-llama/llama-3.1-8b-instruct"
+
     # Hardware acceleration (auto-detects best option)
     device: "auto"  # Options: "auto", "cpu", "cuda" (NVIDIA), "mps" (M1/M2 Mac)
     
@@ -43,6 +44,7 @@ llm:
     model_name: "openai/gpt-4o-mini"      # Fast, cost-effective
     # model_name: "mistralai/mistral-nemo"  # Good balance
     # model_name: "qwen/qwen3-14b"          # High quality
+    #model_name: "meta-llama/llama-3.1-8b-instruct"
     
     # API settings
     base_url: "https://openrouter.ai/api/v1"

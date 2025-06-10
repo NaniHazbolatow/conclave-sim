@@ -47,7 +47,7 @@ class ConclaveEnv:
         logger.info(f"Total votes: {sum(self.votingBuffer.values())}")
         print(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
         print(f"Total votes: {sum(self.votingBuffer.values())}")
-        threshold = self.num_agents * 2 / 3
+        threshold = self.num_agents * self.supermajority_threshold
         
         # Check if any votes were cast
         if not voting_results:
@@ -55,9 +55,9 @@ class ConclaveEnv:
             self.votingBuffer.clear()
             return False
             
-        print(f"most votes: {voting_results[0][1]}, threshold: {threshold}")
+        print(f"most votes: {voting_results[0][1]}, threshold: {threshold} (supermajority: {self.supermajority_threshold*100:.1f}%)")
 
-        # if the top candidate has more than 2/3 of the votes
+        # if the top candidate has more than the supermajority threshold of the votes
         if voting_results[0][1] > threshold:
             top_candidate = voting_results[0][0]
             self.winner = top_candidate
