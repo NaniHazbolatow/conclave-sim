@@ -109,7 +109,7 @@ simulation:
   max_election_rounds: 1    # Maximum number of full election rounds before stopping (no winner required)
   discussion_length:
     min_words: 100          # Minimum word count for discussion contributions
-    max_words: 300          # Maximum word count for discussion contributions
+    max_words: 200          # Maximum word count for discussion contributions
   
   # Voting rules
   voting:

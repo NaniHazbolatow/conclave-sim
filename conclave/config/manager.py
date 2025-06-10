@@ -153,6 +153,14 @@ class ConfigManager:
         """Get the maximum number of election rounds before stopping."""
         return self.get_simulation_config().get("max_election_rounds", 3)
     
+    def get_discussion_min_words(self) -> int:
+        """Get the minimum word count for discussion contributions."""
+        return self.get_simulation_config().get("discussion_length", {}).get("min_words", 100)
+    
+    def get_discussion_max_words(self) -> int:
+        """Get the maximum word count for discussion contributions."""
+        return self.get_simulation_config().get("discussion_length", {}).get("max_words", 300)
+    
     def is_local_backend(self) -> bool:
         """Check if the backend is set to local."""
         return self.get_backend_type() == "local"

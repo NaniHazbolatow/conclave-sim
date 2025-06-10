@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 from ..config.manager import get_config
+from ..config.prompts import get_prompt_manager
 
 # Set tokenizer parallelism to avoid warnings in multiprocessing
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -51,8 +52,9 @@ class Agent:
         self.vote_history = []
         self.logger = logging.getLogger(name)
         
-        # Get configuration
+        # Get configuration and prompt manager
         self.config = get_config()
+        self.prompt_manager = get_prompt_manager()
         
         # Use shared LLM client to avoid multiple model instances
         try:
@@ -72,19 +74,17 @@ class Agent:
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
         discussion_history = self.env.get_discussion_history(self.agent_id)
-        prompt = f"""You are {self.name}. Here is some information about yourself: {self.background}
-You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
-The candidates are:
-{self.env.list_candidates_for_prompt()}
-
-{personal_vote_history}
-
-{ballot_results_history}
-
-{discussion_history}
-
-Please vote for one of the candidates using the cast_vote tool. Make sure to include both your chosen candidate and a detailed explanation of why you chose them.
-        """
+        
+        # Use prompt manager to get formatted prompt
+        prompt = self.prompt_manager.get_voting_prompt(
+            agent_name=self.name,
+            background=self.background,
+            candidates_list=self.env.list_candidates_for_prompt(),
+            personal_vote_history=personal_vote_history,
+            ballot_results_history=ballot_results_history,
+            discussion_history=discussion_history
+        )
+        
         if (self.agent_id == 0):
             print(prompt)
         self.logger.info(prompt)
@@ -152,30 +152,15 @@ Please vote for one of the candidates using the cast_vote tool. Make sure to inc
         ballot_results_history = self.promptize_voting_results_history()
         discussion_history = self.env.get_discussion_history(self.agent_id)
 
-        prompt = f"""You are {self.name}. Here is some information about yourself: {self.background}
-You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
-The candidates are:
-{self.env.list_candidates_for_prompt()}
-
-{personal_vote_history}
-
-{ballot_results_history}
-
-{discussion_history}
-
-Based on the current state of the conclave, how urgently do you feel the need to speak?
-Evaluate your desire to speak on a scale from 1-100, where:
-1 = You have nothing important to add at this time
-100 = You have an extremely urgent point that must be heard immediately
-
-Consider factors such as:
-- How strongly do you feel about supporting or opposing specific candidates?
-- Do you need to respond to something said in a previous discussion?
-- Do you have important information or perspectives that haven't been shared yet?
-- Are the voting trends concerning to you?
-
-Use the evaluate_speaking_urgency tool to provide your urgency score and reasoning.
-        """
+        # Use prompt manager to get formatted prompt
+        prompt = self.prompt_manager.get_speaking_urgency_prompt(
+            agent_name=self.name,
+            background=self.background,
+            candidates_list=self.env.list_candidates_for_prompt(),
+            personal_vote_history=personal_vote_history,
+            ballot_results_history=ballot_results_history,
+            discussion_history=discussion_history
+        )
 
         # Define urgency evaluation tool
         tools = [
@@ -252,35 +237,27 @@ Use the evaluate_speaking_urgency tool to provide your urgency score and reasoni
         # Include speaking urgency information if available
         urgency_context = ""
         if urgency_data and 'urgency_score' in urgency_data and 'reasoning' in urgency_data:
-            urgency_context = f"""You indicated that you have an urgency level of {urgency_data['urgency_score']}/100 to speak.
-Your reasoning was: {urgency_data['reasoning']}
+            urgency_context = self.prompt_manager.get_urgency_context(
+                urgency_score=urgency_data['urgency_score'],
+                urgency_reasoning=urgency_data['reasoning']
+            )
 
-Keep this urgency level and reasoning in mind as you formulate your response.
-"""
-
-        prompt = f"""You are {self.name}. Here is some information about yourself: {self.background}
-You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
-The candidates are:
-{self.env.list_candidates_for_prompt()}
-
-{personal_vote_history}
-
-{ballot_results_history}
-
-{discussion_history}
-
-{urgency_context}
-It's time for a discussion round. Use the speak_message tool to contribute to the discussion.
-Your goal is to influence others based on your beliefs and background. You can:
-1. Make your case for a particular candidate
-2. Question the qualifications of other candidates
-3. Respond to previous speakers
-4. Share your perspectives on what the Church needs
-
-Be authentic to your character and background. Provide a meaningful contribution of 100-300 words.
-        """
+        # Use prompt manager to get formatted prompt
+        prompt = self.prompt_manager.get_discussion_prompt(
+            agent_name=self.name,
+            background=self.background,
+            candidates_list=self.env.list_candidates_for_prompt(),
+            personal_vote_history=personal_vote_history,
+            ballot_results_history=ballot_results_history,
+            discussion_history=discussion_history,
+            urgency_context=urgency_context,
+            discussion_min_words=self.config.get_discussion_min_words(),
+            discussion_max_words=self.config.get_discussion_max_words()
+        )
 
         # Define speak tool
+        min_words = self.config.get_discussion_min_words()
+        max_words = self.config.get_discussion_max_words()
         tools = [
             {
                 "type": "function",
@@ -292,7 +269,7 @@ Be authentic to your character and background. Provide a meaningful contribution
                         "properties": {
                             "message": {
                                 "type": "string",
-                                "description": "Your contribution to the discussion (100-300 words)"
+                                "description": f"Your contribution to the discussion ({min_words}-{max_words} words)"
                             }
                         },
                         "required": ["message"]
