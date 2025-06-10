@@ -4,6 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from typing import Dict, List, Optional
+from ..config.manager import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,14 @@ class ConclaveEnv:
         self.winner = None
         self.discussionHistory = []
         self.discussionRound = 0
+        # Track which agents participated in which discussion rounds
+        self.agent_discussion_participation = {}
+        
+        # Get configuration for simulation parameters
+        self.config = get_config()
+        self.simulation_config = self.config.get_simulation_config()
+        self.max_discussion_rounds = self.simulation_config.get("max_discussion_rounds", 3)
+        self.max_speakers_per_round = self.simulation_config.get("max_speakers_per_round", 5)
 
     def cast_vote(self, candidate_id: int) -> None:
         with self.voting_lock:
@@ -40,6 +49,13 @@ class ConclaveEnv:
         print(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
         print(f"Total votes: {sum(self.votingBuffer.values())}")
         threshold = self.num_agents * 2 / 3
+        
+        # Check if any votes were cast
+        if not voting_results:
+            print("No votes were cast in this round.")
+            self.votingBuffer.clear()
+            return False
+            
         print(f"most votes: {voting_results[0][1]}, threshold: {threshold}")
 
         # if the top candidate has more than 2/3 of the votes
@@ -160,6 +176,13 @@ class ConclaveEnv:
 
         self.discussionHistory.append(round_comments)
 
+        # Track which agents participated in this discussion round
+        participating_agent_ids = [comment['agent_id'] for comment in round_comments]
+        for agent_id in participating_agent_ids:
+            if agent_id not in self.agent_discussion_participation:
+                self.agent_discussion_participation[agent_id] = []
+            self.agent_discussion_participation[agent_id].append(self.discussionRound - 1)  # -1 because we already incremented
+
         # Log the discussion with urgency included (or random selection note)
         discussion_str = "\n\n".join([
             f"Cardinal {comment['agent_id']} - {self.agents[comment['agent_id']].name} "
@@ -167,6 +190,13 @@ class ConclaveEnv:
             for comment in round_comments
         ])
         logger.info(f"Discussion round {self.discussionRound} completed.\n{discussion_str}")
+        print(f"\nDiscussion round {self.discussionRound} completed:")
+        print("=" * 60)
+        for comment in round_comments:
+            agent_name = self.agents[comment['agent_id']].name
+            print(f"\nCardinal {comment['agent_id']} - {agent_name}:")
+            print(f"{comment['message']}")
+        print("=" * 60)
 
     def list_candidates_for_prompt(self, randomize: bool = True) -> str:
         indices = list(range(self.num_agents))
@@ -176,17 +206,43 @@ class ConclaveEnv:
         result = "\n".join(candidates)
         return result
 
-    def get_discussion_history(self) -> str:
-        """Return formatted discussion history for prompts."""
+    def get_discussion_history(self, agent_id: Optional[int] = None) -> str:
+        """Return formatted discussion history for prompts.
+        
+        Args:
+            agent_id: If provided, only return discussions this agent participated in.
+                     If None, return all discussions (original behavior).
+        """
         if not self.discussionHistory:
             return ""
 
+        # If no agent_id provided, return all discussions (backward compatibility)
+        if agent_id is None:
+            history_str = ""
+            for round_num, comments in enumerate(self.discussionHistory):
+                round_str = f"Discussion Round {round_num + 1}:\n"
+                for comment in comments:
+                    comment_agent_id = comment['agent_id']
+                    round_str += f"Cardinal {comment_agent_id} - {self.agents[comment_agent_id].name}:\n{comment['message']}\n\n"
+                history_str += round_str + "\n"
+            return history_str
+
+        # Return only discussions this agent participated in
+        if agent_id not in self.agent_discussion_participation:
+            return ""
+        
+        participated_rounds = self.agent_discussion_participation[agent_id]
+        if not participated_rounds:
+            return ""
+
         history_str = ""
-        for round_num, comments in enumerate(self.discussionHistory):
-            round_str = f"Discussion Round {round_num + 1}:\n"
-            for comment in comments:
-                agent_id = comment['agent_id']
-                round_str += f"Cardinal {agent_id} - {self.agents[agent_id].name}:\n{comment['message']}\n\n"
-            history_str += round_str + "\n"
+        for round_index in participated_rounds:
+            if round_index < len(self.discussionHistory):
+                comments = self.discussionHistory[round_index]
+                round_str = f"Discussion Round {round_index + 1}:\n"
+                for comment in comments:
+                    comment_agent_id = comment['agent_id']
+                    round_str += f"Cardinal {comment_agent_id} - {self.agents[comment_agent_id].name}:\n{comment['message']}\n\n"
+                history_str += round_str + "\n"
 
         return history_str
