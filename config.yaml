@@ -101,3 +101,46 @@ simulation:
     enable_abstention: false    # Allow cardinals to abstain from voting
     require_reasoning: true     # Cardinals must explain their vote
     supermajority_threshold: 0.667  # Requires 2/3 supermajority (67%) to elect Pope
+
+# ===================================================================
+# VISUALIZATION SETTINGS
+# ===================================================================
+# Controls 2D visualization and cardinal positioning
+visualization:
+  # Dimensionality reduction method for 2D positioning
+  reduction_method: "pca"     # Options: "pca", "tsne", "umap"
+  
+  # PCA-specific settings
+  pca:
+    random_state: 42          # For reproducible results
+    
+  # t-SNE settings (if using tsne)
+  tsne:
+    random_state: 42
+    perplexity: 5             # Controls local vs global structure (auto-adjusted for small datasets)
+    n_iter: 1000             # Number of optimization iterations
+    
+  # UMAP settings (if using umap)
+  umap:
+    random_state: 42
+    n_neighbors: 5            # Controls local vs global structure (auto-adjusted for small datasets)
+    min_dist: 0.1            # Minimum distance between points in low-dimensional space
+    
+  # Grid positioning
+  grid:
+    size: 100                 # Grid size (0-100 coordinate system)
+    jitter: 2.0              # Small random offset to avoid overlaps
+    
+  # Plot styling
+  plot:
+    figure_size: [12, 8]      # Width, height in inches
+    point_size: 120           # Size of cardinal points
+    font_size: 10             # Label font size
+    alpha: 0.8               # Point transparency
+    colormap: "tab10"        # Color scheme for different groups
+    
+  # Analysis settings
+  analysis:
+    cluster_distance_threshold: 30  # Minimum distance for good separation
+    show_cluster_centers: true      # Display cluster center points
+    show_distances: true           # Show distances between clusters
