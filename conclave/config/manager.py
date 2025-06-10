@@ -153,6 +153,10 @@ class ConfigManager:
         """Get the maximum number of election rounds before stopping."""
         return self.get_simulation_config().get("max_election_rounds", 3)
     
+    def get_randomize_speaking_order(self) -> bool:
+        """Get whether to randomize the order of speakers in discussion rounds."""
+        return self.get_simulation_config().get("randomize_speaking_order", True)
+    
     def get_discussion_min_words(self) -> int:
         """Get the minimum word count for discussion contributions."""
         return self.get_simulation_config().get("discussion_length", {}).get("min_words", 100)

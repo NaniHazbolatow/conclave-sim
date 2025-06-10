@@ -1,6 +1,8 @@
 import logging
 import random
 import threading
+import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from typing import Dict, List, Optional
@@ -51,7 +53,8 @@ class ConclaveEnv:
         logger.info(f"Total votes: {sum(self.votingBuffer.values())}")
         
         # Simplified voting summary for console
-        threshold = self.num_agents * self.supermajority_threshold
+        import math
+        threshold = math.ceil(self.num_agents * self.supermajority_threshold)
         
         # Check if any votes were cast
         if not voting_results:
@@ -62,10 +65,10 @@ class ConclaveEnv:
         # Show only top 3 candidates to reduce clutter
         top_candidates = voting_results[:3]
         top_results_str = ", ".join([f"{self.agents[i].name}: {votes}" for i, votes in top_candidates])
-        print(f"🗳️  Voting Round {self.votingRound}: {top_results_str} | Threshold: {threshold:.1f} votes")
+        print(f"🗳️  Voting Round {self.votingRound}: {top_results_str} | Threshold: {threshold} votes")
 
-        # if the top candidate has more than the supermajority threshold of the votes
-        if voting_results[0][1] > threshold:
+        # if the top candidate has more than or equal to the supermajority threshold of the votes
+        if voting_results[0][1] >= threshold:
             top_candidate = voting_results[0][0]
             self.winner = top_candidate
             print(f"🎉 Cardinal {self.agents[top_candidate].name} elected Pope!")
@@ -85,16 +88,22 @@ class ConclaveEnv:
         self.discussionRound += 1
         round_comments = []
 
-        # Select speakers randomly
-        logger.info(f"Using random selection for discussion round {self.discussionRound}")
-
         # Get all agent IDs
         all_agent_ids = list(range(len(self.agents)))
 
-        # Randomly shuffle the IDs
-        random.shuffle(all_agent_ids)
+        # Check if we should randomize speaking order
+        randomize_order = self.config.get_randomize_speaking_order()
+        
+        if randomize_order:
+            # Select speakers randomly
+            logger.info(f"Using random selection for discussion round {self.discussionRound}")
+            # Randomly shuffle the IDs
+            random.shuffle(all_agent_ids)
+        else:
+            # Use sequential order (agent ID order)
+            logger.info(f"Using sequential order for discussion round {self.discussionRound}")
 
-        # Select the specified number of speakers randomly
+        # Select the specified number of speakers
         if num_speakers > self.num_agents:
             selected_agent_ids = all_agent_ids
         else:
@@ -160,7 +169,34 @@ class ConclaveEnv:
         indices = list(range(self.num_agents))
         if randomize:
             random.shuffle(indices)
-        candidates = [f"Cardinal {i}: {self.agents[i].name}" for i in indices]
+        
+        candidates = []
+        for display_order, actual_id in enumerate(indices):
+            # Check if we can load ideological stance from CSV
+            ideological_stance = None
+            try:
+                # Try to load the CSV to get ideological stance
+                import pandas as pd
+                import os
+                if os.path.exists('data/cardinal_electors_2025.csv'):
+                    df = pd.read_csv('data/cardinal_electors_2025.csv')
+                    agent_row = df[df['Name'] == self.agents[actual_id].name]
+                    if not agent_row.empty and 'Ideological_Stance' in df.columns:
+                        ideological_stance = agent_row['Ideological_Stance'].iloc[0]
+                        if pd.notna(ideological_stance):
+                            ideological_stance = str(ideological_stance).strip()
+                        else:
+                            ideological_stance = None
+            except Exception:
+                ideological_stance = None
+            
+            # Use the actual agent ID, not the display order, for consistent mapping
+            if ideological_stance:
+                candidates.append(f"Cardinal {actual_id}: {self.agents[actual_id].name}\nIdeological Stance: {ideological_stance}\n")
+            else:
+                # Just show the name if no ideological stance available
+                candidates.append(f"Cardinal {actual_id}: {self.agents[actual_id].name}\n")
+        
         result = "\n".join(candidates)
         return result
 

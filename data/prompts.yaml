@@ -5,42 +5,45 @@
 # Variables can be used with {variable_name} syntax.
 
 voting_prompt: |
-  You are {agent_name}. Here is some information about yourself: {background}
-  You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
-  The candidates are:
-  {candidates_list}
-
+  You are {agent_name}. You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
+  
+  Your current stance: {internal_stance}
+  
   {personal_vote_history}
 
   {ballot_results_history}
 
-  {discussion_history}
-
-  Please vote for one of the candidates using the cast_vote tool. Make sure to include both your chosen candidate and a detailed explanation of why you chose them.
+  Based on your stance and the voting history, cast your vote using the cast_vote tool. Include your candidate choice and a brief explanation for your decision.
 
 discussion_prompt: |
-  You are {agent_name}. Here is some information about yourself: {background}
-  You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
-  The candidates are:
-  {candidates_list}
-
+  You are {agent_name}. You are participating in the conclave to elect the next pope. The candidate that secures a 2/3 supermajority of votes wins.
+  
+  Your current stance: {internal_stance}
+  
   {personal_vote_history}
 
   {ballot_results_history}
 
   {discussion_history}
 
-  It's time for a discussion round. Use the speak_message tool to contribute to the discussion.
-  Your goal is to influence others based on your beliefs and background. You can:
-  1. Make your case for a particular candidate
-  2. Question the qualifications of other candidates
-  3. Respond to previous speakers
-  4. Share your perspectives on what the Church needs
-
-  Be authentic to your character and background. Provide a meaningful contribution of {discussion_min_words}-{discussion_max_words} words.
+  It's time for a discussion round. Your goal is to CONVINCE other cardinals to support your preferred candidate and build momentum toward victory.
+  
+  Based on the voting results and your stance, strategically engage with your fellow cardinals to:
+  - Persuade undecided cardinals to join your preferred candidate
+  - Challenge supporters of rival candidates with specific concerns
+  - Build coalitions by finding common ground with like-minded cardinals
+  - Use voting momentum to your advantage (highlight growing support or question declining candidates)
+  - Respond directly to previous speakers to advance your strategy
+  
+  Be persuasive, strategic, and authentic to your stance. Focus on DISCUSSION and CONVINCING others, not just stating your position.
+  
+  Provide a meaningful contribution of {discussion_min_words}-{discussion_max_words} words.
 
 internal_stance_prompt: |
   You are {agent_name}. Based on your background, recent discussions, and voting patterns, provide your concise internal stance on the papal election.
+  
+  The candidates are:
+  {candidates_list}
   
   Your background: {background}
   {personal_vote_history}

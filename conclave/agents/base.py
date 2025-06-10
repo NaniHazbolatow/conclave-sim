@@ -80,17 +80,22 @@ class Agent:
     def cast_vote(self) -> None:
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history(self.agent_id)
+        
+        # Get current internal stance (generate if needed)
+        internal_stance = self.get_internal_stance()
         
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_voting_prompt(
             agent_name=self.name,
-            background=self.background,
-            candidates_list=self.env.list_candidates_for_prompt(),
+            internal_stance=internal_stance,
             personal_vote_history=personal_vote_history,
-            ballot_results_history=ballot_results_history,
-            discussion_history=discussion_history
+            ballot_results_history=ballot_results_history
         )
+        
+        # Add candidate list to help with voting decision
+        candidates_list = self.env.list_candidates_for_prompt(randomize=False)
+        prompt += f"\n\nAvailable candidates:\n{candidates_list}\n"
+        prompt += "IMPORTANT: Use the Cardinal ID number (0, 1, 2, etc.) as shown above when casting your vote."
         
         # Only log the prompt for debugging, don't print to console
         self.logger.debug(f"Voting prompt for {self.name}: {prompt}")
@@ -107,7 +112,7 @@ class Agent:
                         "properties": {
                             "candidate": {
                                 "type": "integer",
-                                "description": "The ID of the candidate to vote for"
+                                "description": "The Cardinal ID number (0, 1, 2, etc.) of the candidate to vote for. Must match the Cardinal ID shown in the candidate list."
                             },
                             "explanation": {
                                 "type": "string",
@@ -135,9 +140,24 @@ class Agent:
                 })
 
                 if vote is not None and isinstance(vote, int):
-                    self.env.cast_vote(vote)
-                    self.logger.info(f"{self.name} ({self.agent_id}) voted for {self.env.agents[vote].name} ({vote}) because\n{reasoning}")
-                    return
+                    # Validate vote is within range
+                    if 0 <= vote < len(self.env.agents):
+                        voted_candidate_name = self.env.agents[vote].name
+                        
+                        # Check for potential reasoning-vote mismatch
+                        if reasoning and voted_candidate_name.lower() not in reasoning.lower():
+                            # Check if reasoning mentions a different candidate name
+                            for i, agent in enumerate(self.env.agents):
+                                if i != vote and agent.name.lower() in reasoning.lower():
+                                    self.logger.warning(f"POTENTIAL VOTE MISMATCH: {self.name} voted for {voted_candidate_name} (ID {vote}) but reasoning mentions {agent.name}")
+                                    break
+                        
+                        self.env.cast_vote(vote)
+                        self.logger.info(f"{self.name} ({self.agent_id}) voted for {voted_candidate_name} ({vote}) because\n{reasoning}")
+                        return
+                    else:
+                        self.logger.error(f"Invalid vote ID {vote}: must be between 0 and {len(self.env.agents)-1}")
+                        raise ValueError(f"Invalid vote ID {vote}")
                 else:
                     raise ValueError("Invalid vote")
             else:
@@ -147,6 +167,11 @@ class Agent:
         except Exception as e:
             # Default vote if there's an error
             self.logger.error(f"Error in LlmAgent {self.agent_id} voting: {e}")
+            # Default to voting for the first candidate (ID 0)
+            default_vote = 0
+            default_candidate_name = self.env.agents[default_vote].name
+            self.env.cast_vote(default_vote)
+            self.logger.warning(f"{self.name} ({self.agent_id}) defaulted to voting for {default_candidate_name} ({default_vote}) due to error")
 
 
 
@@ -160,12 +185,14 @@ class Agent:
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
         discussion_history = self.env.get_discussion_history(self.agent_id)
+        
+        # Get current internal stance (generate if needed)
+        internal_stance = self.get_internal_stance()
 
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_discussion_prompt(
             agent_name=self.name,
-            background=self.background,
-            candidates_list=self.env.list_candidates_for_prompt(),
+            internal_stance=internal_stance,
             personal_vote_history=personal_vote_history,
             ballot_results_history=ballot_results_history,
             discussion_history=discussion_history,
@@ -282,6 +309,7 @@ class Agent:
         prompt = self.prompt_manager.get_internal_stance_prompt(
             agent_name=self.name,
             background=self.background,
+            candidates_list=self.env.list_candidates_for_prompt(randomize=False),
             personal_vote_history=personal_vote_history,
             ballot_results_history=ballot_results_history,
             discussion_history=discussion_history
