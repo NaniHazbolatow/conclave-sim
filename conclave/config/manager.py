@@ -120,9 +120,30 @@ class ConfigManager:
         """Get the similarity threshold for embedding matches."""
         return self.get_embedding_config().get("similarity_threshold", 0.7)
     
+    # Simulation configuration methods
+    def get_num_cardinals(self) -> int:
+        """Get the number of cardinals to include in simulation."""
+        return self.get_simulation_config().get("num_cardinals", 5)
+    
+    def get_max_speakers_per_round(self) -> int:
+        """Get the maximum number of speakers per round."""
+        return self.get_simulation_config().get("max_speakers_per_round", 5)
+    
+    def get_num_discussions(self) -> int:
+        """Get the number of complete discussion cycles to run."""
+        return self.get_simulation_config().get("num_discussions", 1)
+    
+    def get_max_election_rounds(self) -> int:
+        """Get the maximum number of election rounds before stopping."""
+        return self.get_simulation_config().get("max_election_rounds", 3)
+    
     def is_local_backend(self) -> bool:
         """Check if the backend is set to local."""
         return self.get_backend_type() == "local"
+    
+    def is_remote_backend(self) -> bool:
+        """Check if the backend is set to remote."""
+        return self.get_backend_type() == "remote"
     
     def get_api_key_from_env(self) -> Optional[str]:
         """Get API key from environment variable."""

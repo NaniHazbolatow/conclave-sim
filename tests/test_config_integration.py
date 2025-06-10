@@ -52,8 +52,10 @@ def main():
     print("\n5. Simulation Configuration:")
     sim_config = config.get_simulation_config()
     print(f"   📝 Log Level: {sim_config.get('log_level', 'Not Set')}")
-    print(f"   🗣️  Max Discussion Rounds: {sim_config.get('max_discussion_rounds', 'Not Set')}")
+    print(f"   👥 Number of Cardinals: {sim_config.get('num_cardinals', 'Not Set')}")
     print(f"   👥 Max Speakers Per Round: {sim_config.get('max_speakers_per_round', 'Not Set')}")
+    print(f"   🗣️  Number of Discussions per Round: {sim_config.get('num_discussions', 'Not Set')}")
+    print(f"   🗳️  Max Election Rounds: {sim_config.get('max_election_rounds', 'Not Set')}")
     
     voting_config = sim_config.get('voting', {})
     print(f"   🗳️  Supermajority Threshold: {voting_config.get('supermajority_threshold', 'Not Set')}")

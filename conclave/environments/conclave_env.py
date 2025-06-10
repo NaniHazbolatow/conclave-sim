@@ -25,7 +25,6 @@ class ConclaveEnv:
         # Get configuration for simulation parameters
         self.config = get_config()
         self.simulation_config = self.config.get_simulation_config()
-        self.max_discussion_rounds = self.simulation_config.get("max_discussion_rounds", 3)
         self.max_speakers_per_round = self.simulation_config.get("max_speakers_per_round", 5)
 
     def cast_vote(self, candidate_id: int) -> None:

@@ -10,7 +10,7 @@
 # Controls how cardinal agents think and communicate
 llm:
   # Backend type: choose "local" for privacy/offline or "remote" for cloud models
-  backend: "local"  # Options: "local", "remote"
+  backend: "remote"  # Options: "local", "remote"
   
   # Text generation parameters (affect cardinal personalities)
   temperature: 0.7        # Creativity/randomness (0.0-2.0, higher = more creative)
@@ -40,7 +40,7 @@ llm:
   # Remote Model Configuration (OpenRouter API)
   remote:
     # Choose your preferred cloud model:
-    # model_name: "openai/gpt-4o-mini"      # Fast, cost-effective
+    model_name: "openai/gpt-4o-mini"      # Fast, cost-effective
     # model_name: "mistralai/mistral-nemo"  # Good balance
     # model_name: "qwen/qwen3-14b"          # High quality
     
@@ -92,13 +92,16 @@ simulation:
   log_level: "INFO"         # Options: "DEBUG", "INFO", "WARNING", "ERROR"
   performance_logging: true # Track timing and performance metrics
   
+  # Cardinal selection
+  num_cardinals: 3          # Number of cardinals to include in simulation (from CSV head)
+  
   # Discussion structure
-  max_discussion_rounds: 3      # Number of debate rounds before voting
-  max_speakers_per_round: 5     # Maximum cardinals who can speak per round
+  max_speakers_per_round: 3     # Maximum cardinals who can speak per round
+  num_discussions: 1        # Number of complete discussion cycles to run per election round
+  max_election_rounds: 1    # Maximum number of full election rounds before stopping (no winner required)
   
   # Voting rules
   voting:
-    enable_abstention: false    # Allow cardinals to abstain from voting
     require_reasoning: true     # Cardinals must explain their vote
     supermajority_threshold: 0.667  # Requires 2/3 supermajority (67%) to elect Pope
 
