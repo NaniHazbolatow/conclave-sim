@@ -5,7 +5,6 @@ import logging
 import os
 import threading
 from ..config.manager import get_config
-from ..llm.client import UnifiedLLMClient
 
 # Set tokenizer parallelism to avoid warnings in multiprocessing
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -58,6 +57,11 @@ class Agent:
         # Use shared LLM client to avoid multiple model instances
         try:
             self.llm_client = _shared_llm_manager.get_client(self.config)
+            
+            # Initialize robust tool caller (import here to avoid circular imports)
+            from ..llm.robust_tools import RobustToolCaller
+            self.tool_caller = RobustToolCaller(self.llm_client, self.logger, config=self.config)
+            
             self.logger.info(f"Agent {self.name} initialized with {self.config.get_backend_type()} backend, model: {self.llm_client.model_name}")
             
         except Exception as e:
@@ -109,28 +113,29 @@ Please vote for one of the candidates using the cast_vote tool. Make sure to inc
             }
         ]
         try:
-            response = self._invoke_claude(prompt, tools, tool_choice="cast_vote")
+            # Use robust tool calling
+            messages = [{"role": "user", "content": prompt}]
+            result = self.tool_caller.call_tool(messages, tools, tool_choice="cast_vote")
+            
+            if result.success and result.arguments:
+                vote = result.arguments.get("candidate")
+                reasoning = result.arguments.get("explanation", "No explanation provided.")
 
-            # Handle tool call response
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                tool_call = response.tool_calls[0]
-                if tool_call.function.name == 'cast_vote':
-                    tool_input = json.loads(tool_call.function.arguments)
-                    vote = tool_input.get("candidate")
-                    reasoning = tool_input.get("explanation", "No explanation provided.")
+                # Save vote reasoning
+                self.vote_history.append({
+                    "vote": vote,
+                    "reasoning": reasoning
+                })
 
-                    # Save vote reasoning
-                    self.vote_history.append({
-                        "vote": vote,
-                        "reasoning": reasoning
-                    })
-
-                    if vote is not None and isinstance(vote, int):
-                        self.env.cast_vote(vote)
-                        self.logger.info(f"{self.name} ({self.agent_id}) voted for {self.env.agents[vote].name} ({vote}) because\n{reasoning}")
-                        return
-                    else:
-                        raise ValueError("Invalid vote")
+                if vote is not None and isinstance(vote, int):
+                    self.env.cast_vote(vote)
+                    self.logger.info(f"{self.name} ({self.agent_id}) voted for {self.env.agents[vote].name} ({vote}) because\n{reasoning}")
+                    return
+                else:
+                    raise ValueError("Invalid vote")
+            else:
+                self.logger.error(f"Tool calling failed: {result.error}")
+                raise ValueError(f"Tool calling failed: {result.error}")
 
         except Exception as e:
             # Default vote if there's an error
@@ -198,32 +203,28 @@ Use the evaluate_speaking_urgency tool to provide your urgency score and reasoni
         ]
 
         try:
-            response = self._invoke_claude(prompt, tools, tool_choice="evaluate_speaking_urgency")
-
-            # Handle tool call response
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                tool_call = response.tool_calls[0]
-                if tool_call.function.name == 'evaluate_speaking_urgency':
-                    tool_input = json.loads(tool_call.function.arguments)
-                    urgency_score = tool_input.get("urgency_score", 50)
-                    reasoning = tool_input.get("reasoning", "No reasoning provided.")
-                    
-                    # Ensure score is in range 1-100
-                    urgency_score = max(1, min(100, int(urgency_score)))
-                    
-                    return {
-                        "agent_id": self.agent_id,
-                        "urgency_score": urgency_score,
-                        "reasoning": reasoning
-                    }
-                else:
-                    raise ValueError("Invalid tool use")
+            # Use robust tool calling
+            messages = [{"role": "user", "content": prompt}]
+            result = self.tool_caller.call_tool(messages, tools, tool_choice="evaluate_speaking_urgency")
+            
+            if result.success and result.arguments:
+                urgency_score = result.arguments.get("urgency_score", 50)
+                reasoning = result.arguments.get("reasoning", "No reasoning provided.")
+                
+                # Ensure score is in range 1-100
+                urgency_score = max(1, min(100, int(urgency_score)))
+                
+                return {
+                    "agent_id": self.agent_id,
+                    "urgency_score": urgency_score,
+                    "reasoning": reasoning
+                }
             else:
-                # Fallback if no tool call
+                self.logger.warning(f"Speaking urgency tool calling failed: {result.error}")
                 return {
                     "agent_id": self.agent_id,
                     "urgency_score": 50,
-                    "reasoning": "No urgency evaluation received from AI"
+                    "reasoning": f"Tool calling failed: {result.error}"
                 }
 
         except Exception as e:
@@ -301,196 +302,33 @@ Be authentic to your character and background. Provide a meaningful contribution
         ]
 
         try:
-            response = self._invoke_claude(prompt, tools, tool_choice="speak_message")
+            # Use robust tool calling
+            messages = [{"role": "user", "content": prompt}]
+            result = self.tool_caller.call_tool(messages, tools, tool_choice="speak_message")
+            
+            if result.success and result.arguments:
+                message = result.arguments.get("message", "")
 
-            # Handle tool call response
-            if hasattr(response, 'tool_calls') and response.tool_calls:
-                tool_call = response.tool_calls[0]
-                if tool_call.function.name == 'speak_message':
-                    tool_input = json.loads(tool_call.function.arguments)
-                    message = tool_input.get("message", "")
+                # Log the discussion contribution
+                self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
+                print(f"\nCardinal {self.agent_id} - {self.name} speaks:\n{message}\n")
 
-                    # Log the discussion contribution
-                    self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
-                    print(f"\nCardinal {self.agent_id} - {self.name} speaks:\n{message}\n")
-
-                    # Return the discussion contribution
-                    return {
-                        "agent_id": self.agent_id,
-                        "message": message
-                    }
-                else:
-                    raise ValueError("Invalid tool use")
-            else:
-                # Fallback if no tool call
+                # Return the discussion contribution
                 return {
                     "agent_id": self.agent_id,
-                    "message": "No discussion contribution received from AI"
+                    "message": message
+                }
+            else:
+                self.logger.warning(f"Discussion tool calling failed: {result.error}")
+                return {
+                    "agent_id": self.agent_id,
+                    "message": f"Tool calling failed: {result.error}"
                 }
 
         except Exception as e:
             # Log the error and return None if there's a problem
             self.logger.error(f"Error in LlmAgent {self.agent_id} discussion: {e}")
             return None
-
-    def _invoke_claude(self, prompt: str, tools: List[Dict] = [], tool_choice: str = None) -> Dict:
-        """Invoke LLM through the configured client."""
-        try:
-            # Create messages in OpenAI format
-            messages = [{"role": "user", "content": prompt}]
-            
-            # Check if using remote backend (supports native tool calls)
-            if self.config.get_backend_type() == 'remote' and tools:
-                # Use native tool calling for remote backend
-                response = self._call_remote_with_tools(messages, tools, tool_choice)
-                return response
-            else:
-                # Use basic generation and parse JSON response manually for local backends
-                if tools:
-                    # Add instructions for JSON format to the prompt
-                    tool_instructions = self._format_tools_as_instructions(tools, tool_choice)
-                    messages[0]["content"] = f"{prompt}\n\n{tool_instructions}"
-                
-                response_text = self.llm_client.generate(messages)
-                
-                if tools:
-                    # Try to parse JSON response for tool calls
-                    response = self._parse_tool_response(response_text, tools)
-                else:
-                    # Create a simple response object
-                    class SimpleResponse:
-                        def __init__(self, content):
-                            self.content = content
-                    response = SimpleResponse(response_text)
-                
-                return response
-            
-        except Exception as e:
-            self.logger.error(f"Error invoking LLM: {e}")
-            raise
-    
-    def _call_remote_with_tools(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None):
-        """Call remote LLM with native tool support."""
-        try:
-            # Prepare the API call parameters
-            api_params = {
-                "model": self.llm_client.model_name,
-                "messages": messages,
-                "tools": tools,
-                **self.llm_client.generation_params
-            }
-            
-            if tool_choice:
-                # OpenAI expects object format for specific function
-                # Format: {"type": "function", "function": {"name": "function_name"}}
-                api_params["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
-            
-            # Call the OpenAI client directly
-            response = self.llm_client.client.chat.completions.create(**api_params)
-            
-            return response.choices[0].message
-            
-        except Exception as e:
-            self.logger.error(f"Error calling remote LLM with tools: {e}")
-            raise
-    
-    def _format_tools_as_instructions(self, tools: List[Dict], tool_choice: str = None) -> str:
-        """Format tools as instructions for models that don't support tool calling."""
-        if not tools:
-            return ""
-            
-        tool = tools[0]  # Use the first (and usually only) tool
-        function = tool.get('function', {})
-        name = function.get('name', 'unknown')
-        description = function.get('description', '')
-        parameters = function.get('parameters', {})
-        
-        instructions = f"\nPlease respond with a JSON object that contains:\n"
-        instructions += f"- function: \"{name}\"\n"
-        instructions += f"- parameters: an object with the required fields\n\n"
-        
-        if 'properties' in parameters:
-            instructions += "Required parameters:\n"
-            for param_name, param_info in parameters['properties'].items():
-                param_type = param_info.get('type', 'string')
-                param_desc = param_info.get('description', '')
-                instructions += f"- {param_name} ({param_type}): {param_desc}\n"
-        
-        # Add a specific example based on the function
-        if name == "cast_vote":
-            instructions += f"\nExample: {{\"function\": \"cast_vote\", \"parameters\": {{\"candidate\": 1, \"explanation\": \"good leadership qualities\"}}}}\n"
-        elif name == "speak_message":
-            instructions += f"\nExample: {{\"function\": \"speak_message\", \"parameters\": {{\"message\": \"I believe we need strong leadership...\"}}}}\n"
-        elif name == "evaluate_speaking_urgency":
-            instructions += f"\nExample: {{\"function\": \"evaluate_speaking_urgency\", \"parameters\": {{\"urgency_score\": 75, \"reasoning\": \"I have important concerns to share\"}}}}\n"
-        else:
-            instructions += f"\nExample: {{\"function\": \"{name}\", \"parameters\": {{\"key\": \"value\"}}}}\n"
-        
-        instructions += "\nYour response (JSON only):"
-        
-        return instructions
-    
-    def _parse_tool_response(self, response_text: str, tools: List[Dict]) -> Dict:
-        """Parse tool response from text for models without native tool support."""
-        try:
-            # Look for JSON in the response - handle nested braces properly
-            import re
-            
-            # Find the first complete JSON object
-            brace_count = 0
-            start_pos = response_text.find('{')
-            if start_pos == -1:
-                raise ValueError("No JSON object found")
-            
-            for i, char in enumerate(response_text[start_pos:], start_pos):
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_text = response_text[start_pos:i+1]
-                        break
-            else:
-                raise ValueError("Incomplete JSON object")
-            
-            tool_data = json.loads(json_text)
-            
-            # Create a mock tool call response
-            class MockToolCall:
-                def __init__(self, function_name, arguments):
-                    self.function = MockFunction(function_name, arguments)
-            
-            class MockFunction:
-                def __init__(self, name, arguments):
-                    self.name = name
-                    self.arguments = json.dumps(arguments)
-            
-            class MockResponse:
-                def __init__(self, tool_call):
-                    self.tool_calls = [tool_call] if tool_call else []
-            
-            function_name = tool_data.get('function')
-            parameters = tool_data.get('parameters', {})
-            
-            if function_name:
-                tool_call = MockToolCall(function_name, parameters)
-                return MockResponse(tool_call)
-            
-            # If no JSON found, return empty response
-            class EmptyResponse:
-                def __init__(self):
-                    self.tool_calls = []
-                    self.content = response_text
-            
-            return EmptyResponse()
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to parse tool response: {e}")
-            class EmptyResponse:
-                def __init__(self):
-                    self.tool_calls = []
-                    self.content = response_text
-            return EmptyResponse()
 
     def promptize_vote_history(self) -> str:
         if self.vote_history:

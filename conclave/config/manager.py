@@ -120,6 +120,22 @@ class ConfigManager:
         """Get the similarity threshold for embedding matches."""
         return self.get_embedding_config().get("similarity_threshold", 0.7)
     
+    def get_tool_calling_config(self) -> Dict[str, Any]:
+        """Get tool calling configuration section."""
+        return self.get_llm_config().get("tool_calling", {})
+    
+    def get_tool_calling_max_retries(self) -> int:
+        """Get the maximum number of retry attempts for failed tool calls."""
+        return self.get_tool_calling_config().get("max_retries", 3)
+    
+    def get_tool_calling_retry_delay(self) -> float:
+        """Get the delay in seconds between retries."""
+        return self.get_tool_calling_config().get("retry_delay", 1.0)
+    
+    def get_tool_calling_enable_fallback(self) -> bool:
+        """Check if fallback to prompt-based tool calling is enabled."""
+        return self.get_tool_calling_config().get("enable_fallback", True)
+    
     # Simulation configuration methods
     def get_num_cardinals(self) -> int:
         """Get the number of cardinals to include in simulation."""
