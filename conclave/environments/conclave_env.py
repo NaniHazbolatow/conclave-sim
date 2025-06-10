@@ -54,7 +54,7 @@ class ConclaveEnv:
         
         # Simplified voting summary for console
         import math
-        threshold = math.ceil(self.num_agents * self.supermajority_threshold)
+        threshold = self._calculate_voting_threshold()
         
         # Check if any votes were cast
         if not voting_results:
@@ -320,3 +320,23 @@ class ConclaveEnv:
             stance_preview = stance[:100].replace('\n', ' ')
             logger.info(f"{name}: {stance_preview}...")
         logger.info("=== END INITIAL STANCES SUMMARY ===")
+    
+    def _calculate_voting_threshold(self) -> int:
+        """
+        Calculate voting threshold with special handling for small groups.
+        
+        For small groups (≤5 cardinals), use rounding to avoid requiring unanimity.
+        For larger groups, use ceiling as originally intended.
+        
+        Returns:
+            The minimum number of votes required to elect a pope
+        """
+        import math
+        raw_threshold = self.num_agents * self.supermajority_threshold
+        
+        # For very small groups, use rounding instead of ceiling
+        # This ensures 3 cardinals need 2 votes (67%), not 3 votes (100%)
+        if self.num_agents <= 5:
+            return max(1, round(raw_threshold))
+        else:
+            return math.ceil(raw_threshold)

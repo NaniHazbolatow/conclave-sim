@@ -165,10 +165,9 @@ class Agent:
                 raise ValueError(f"Tool calling failed: {result.error}")
 
         except Exception as e:
-            # Default vote if there's an error
+            # Smart fallback vote if there's an error
             self.logger.error(f"Error in LlmAgent {self.agent_id} voting: {e}")
-            # Default to voting for the first candidate (ID 0)
-            default_vote = 0
+            default_vote = self._get_smart_fallback_vote(result if 'result' in locals() else None)
             default_candidate_name = self.env.agents[default_vote].name
             self.env.cast_vote(default_vote)
             self.logger.warning(f"{self.name} ({self.agent_id}) defaulted to voting for {default_candidate_name} ({default_vote}) due to error")
@@ -422,3 +421,105 @@ class Agent:
             return current_activity != last_activity
         
         return True
+
+    def _get_smart_fallback_vote(self, failed_result=None) -> int:
+        """
+        Get a smart fallback vote based on agent's stated preferences and reasoning.
+        
+        Args:
+            failed_result: The failed tool calling result, may contain partial information
+            
+        Returns:
+            Cardinal ID to vote for
+        """
+        # Strategy 1: Try to parse candidate from failed response text
+        if failed_result and hasattr(failed_result, 'raw_response') and failed_result.raw_response:
+            candidate_id = self._extract_candidate_from_text(failed_result.raw_response)
+            if candidate_id is not None:
+                self.logger.info(f"Smart fallback: extracted candidate {candidate_id} from failed response")
+                return candidate_id
+        
+        # Strategy 2: Use internal stance to find preferred candidate
+        if self.internal_stance:
+            candidate_id = self._extract_candidate_from_text(self.internal_stance)
+            if candidate_id is not None:
+                self.logger.info(f"Smart fallback: using candidate {candidate_id} from internal stance")
+                return candidate_id
+        
+        # Strategy 3: Use most recent vote history
+        if self.vote_history:
+            last_vote = self.vote_history[-1]
+            if isinstance(last_vote, dict) and 'vote' in last_vote:
+                vote_id = last_vote['vote']
+                if isinstance(vote_id, int) and 0 <= vote_id < len(self.env.agents):
+                    self.logger.info(f"Smart fallback: using last vote {vote_id}")
+                    return vote_id
+        
+        # Strategy 4: Vote for self if this agent is a candidate
+        if 0 <= self.agent_id < len(self.env.agents):
+            self.logger.info(f"Smart fallback: voting for self ({self.agent_id})")
+            return self.agent_id
+        
+        # Strategy 5: Default to first candidate
+        self.logger.info("Smart fallback: using default candidate 0")
+        return 0
+    
+    def _extract_candidate_from_text(self, text: str) -> Optional[int]:
+        """
+        Extract candidate ID from text by looking for candidate names and patterns.
+        
+        Args:
+            text: Text to analyze for candidate preferences
+            
+        Returns:
+            Cardinal ID if found, None otherwise
+        """
+        if not text:
+            return None
+        
+        text_lower = text.lower()
+        
+        # Strategy 1: Look for explicit candidate ID patterns like "candidate 2" or "cardinal 1"
+        import re
+        id_patterns = [
+            r'candidate\s+(\d+)',
+            r'cardinal\s+(\d+)',
+            r'vote\s+for\s+(\d+)',
+            r'choose\s+(\d+)',
+            r'support\s+(\d+)'
+        ]
+        
+        for pattern in id_patterns:
+            matches = re.findall(pattern, text_lower)
+            for match in matches:
+                try:
+                    candidate_id = int(match)
+                    if 0 <= candidate_id < len(self.env.agents):
+                        return candidate_id
+                except ValueError:
+                    continue
+        
+        # Strategy 2: Look for candidate names mentioned in the text
+        best_match = None
+        max_count = 0
+        
+        for i, agent in enumerate(self.env.agents):
+            agent_name_lower = agent.name.lower()
+            # Count mentions of this candidate's name
+            count = text_lower.count(agent_name_lower)
+            
+            # Also check for partial name matches (last name)
+            name_parts = agent_name_lower.split()
+            if len(name_parts) > 1:
+                last_name = name_parts[-1]
+                count += text_lower.count(last_name)
+            
+            if count > max_count:
+                max_count = count
+                best_match = i
+        
+        # Only return if we found a clear preference (mentioned more than once or only candidate mentioned)
+        if max_count > 1 or (max_count == 1 and sum(1 for agent in self.env.agents if agent.name.lower() in text_lower) == 1):
+            return best_match
+        
+        return None
