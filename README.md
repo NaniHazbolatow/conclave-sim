@@ -60,7 +60,7 @@ Each cardinal is represented by an LLM-powered agent with:
 - Real-world identity based on actual cardinals
 - Background information describing their views and priorities
 - Ability to vote for candidates
-- Ability to participate in discussions with varying levels of urgency
+- Ability to participate in discussions
 - Memory of previous votes and discussions
 
 ### 3. Simulation Modes

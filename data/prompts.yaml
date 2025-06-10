@@ -18,31 +18,6 @@ voting_prompt: |
 
   Please vote for one of the candidates using the cast_vote tool. Make sure to include both your chosen candidate and a detailed explanation of why you chose them.
 
-speaking_urgency_prompt: |
-  You are {agent_name}. Here is some information about yourself: {background}
-  You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
-  The candidates are:
-  {candidates_list}
-
-  {personal_vote_history}
-
-  {ballot_results_history}
-
-  {discussion_history}
-
-  Based on the current state of the conclave, how urgently do you feel the need to speak?
-  Evaluate your desire to speak on a scale from 1-100, where:
-  1 = You have nothing important to add at this time
-  100 = You have an extremely urgent point that must be heard immediately
-
-  Consider factors such as:
-  - How strongly do you feel about supporting or opposing specific candidates?
-  - Do you need to respond to something said in a previous discussion?
-  - Do you have important information or perspectives that haven't been shared yet?
-  - Are the voting trends concerning to you?
-
-  Use the evaluate_speaking_urgency tool to provide your urgency score and reasoning.
-
 discussion_prompt: |
   You are {agent_name}. Here is some information about yourself: {background}
   You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
@@ -55,7 +30,6 @@ discussion_prompt: |
 
   {discussion_history}
 
-  {urgency_context}
   It's time for a discussion round. Use the speak_message tool to contribute to the discussion.
   Your goal is to influence others based on your beliefs and background. You can:
   1. Make your case for a particular candidate
@@ -64,9 +38,3 @@ discussion_prompt: |
   4. Share your perspectives on what the Church needs
 
   Be authentic to your character and background. Provide a meaningful contribution of {discussion_min_words}-{discussion_max_words} words.
-
-urgency_context_template: |
-  You indicated that you have an urgency level of {urgency_score}/100 to speak.
-  Your reasoning was: {urgency_reasoning}
-
-  Keep this urgency level and reasoning in mind as you formulate your response.

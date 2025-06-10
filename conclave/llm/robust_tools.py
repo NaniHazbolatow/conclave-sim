@@ -387,8 +387,6 @@ Description: {description}
             instructions += f'\nExample: {{"function": "cast_vote", "parameters": {{"candidate": 1, "explanation": "Strong leadership and pastoral experience"}}}}\n'
         elif name == "speak_message":
             instructions += f'\nExample: {{"function": "speak_message", "parameters": {{"message": "I believe we need a leader who can unite the Church in these challenging times..."}}}}\n'
-        elif name == "evaluate_speaking_urgency":
-            instructions += f'\nExample: {{"function": "evaluate_speaking_urgency", "parameters": {{"urgency_score": 75, "reasoning": "I have important concerns about the current voting trends"}}}}\n'
         
         instructions += "\nRespond with ONLY the JSON object, no other text:"
         

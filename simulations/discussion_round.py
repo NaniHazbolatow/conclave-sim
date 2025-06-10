@@ -86,8 +86,7 @@ def main():
             for discussion_num in range(1, num_discussions + 1):
                 logger.info(f"\n--- Discussion Cycle {discussion_num} ---")
                 # Run a discussion round with configured number of speakers
-                # Set random=True to select cardinals randomly instead of by urgency
-                env.run_discussion_round(num_speakers=max_speakers_per_round, random_selection=True)
+                env.run_discussion_round(num_speakers=max_speakers_per_round)
             
             # After all discussions, run voting
             winner_found = env.run_voting_round()

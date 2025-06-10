@@ -63,19 +63,7 @@ class PromptManager:
         template = self.prompts.get("voting_prompt", "")
         return template.format(**kwargs)
     
-    def get_speaking_urgency_prompt(self, **kwargs) -> str:
-        """
-        Get the speaking urgency prompt with variable substitution.
-        
-        Args:
-            **kwargs: Variables to substitute in the prompt template
-            
-        Returns:
-            Formatted speaking urgency prompt
-        """
-        template = self.prompts.get("speaking_urgency_prompt", "")
-        return template.format(**kwargs)
-    
+
     def get_discussion_prompt(self, **kwargs) -> str:
         """
         Get the discussion prompt with variable substitution.
@@ -89,23 +77,7 @@ class PromptManager:
         template = self.prompts.get("discussion_prompt", "")
         return template.format(**kwargs)
     
-    def get_urgency_context(self, urgency_score: int, urgency_reasoning: str) -> str:
-        """
-        Get the urgency context template with variable substitution.
-        
-        Args:
-            urgency_score: The urgency score (1-100)
-            urgency_reasoning: The reasoning for the urgency score
-            
-        Returns:
-            Formatted urgency context
-        """
-        template = self.prompts.get("urgency_context_template", "")
-        return template.format(
-            urgency_score=urgency_score,
-            urgency_reasoning=urgency_reasoning
-        )
-    
+
     def reload_prompts(self):
         """Reload prompt templates from file."""
         self.prompts = self._load_prompts()

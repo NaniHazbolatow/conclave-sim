@@ -74,105 +74,50 @@ class ConclaveEnv:
         self.votingBuffer.clear()
         return False
 
-    def run_discussion_round(self, num_speakers: int = 5, random_selection: bool = False) -> None:
+    def run_discussion_round(self, num_speakers: int = 5) -> None:
         """
         Run a discussion round where agents can speak about candidates or their own position.
 
         Args:
-            num_speakers: Optional number of speakers to include in the discussion.
-                          If None, all agents will participate.
-            random: If True, selects speakers randomly instead of based on urgency.
-                   If False, agents with higher speaking urgency are prioritized.
+            num_speakers: Number of speakers to include in the discussion.
+                          If greater than total agents, all agents will participate.
         """
         self.discussionRound += 1
         round_comments = []
 
-        # Select speakers randomly or based on urgency
-        if random_selection:
-            # Log random selection mode
-            logger.info(f"Using random selection for discussion round {self.discussionRound}")
+        # Select speakers randomly
+        logger.info(f"Using random selection for discussion round {self.discussionRound}")
 
-            # Get all agent IDs
-            all_agent_ids = list(range(len(self.agents)))
+        # Get all agent IDs
+        all_agent_ids = list(range(len(self.agents)))
 
-            # Randomly shuffle the IDs
-            random.shuffle(all_agent_ids)
+        # Randomly shuffle the IDs
+        random.shuffle(all_agent_ids)
 
-            # Select the specified number of speakers randomly
-            if num_speakers > self.num_agents:
-                selected_agent_ids = all_agent_ids
-            else:
-                selected_agent_ids = all_agent_ids[:num_speakers]
-
-            # Create empty urgency scores for compatibility with the rest of the function
-            urgency_scores = [{'agent_id': agent_id, 'urgency_score': 'Random', 'reasoning': 'Random selection'}
-                             for agent_id in selected_agent_ids]
-
-            # Get the corresponding agent objects
-            speakers = [self.agents[agent_id] for agent_id in selected_agent_ids]
-
-            # Log the random selection
-            selected_str = "\n".join([
-                f"Cardinal {agent_id} - {self.agents[agent_id].name}"
-                for agent_id in selected_agent_ids
-            ])
-            logger.info(f"Randomly selected speakers for round {self.discussionRound}:\n{selected_str}")
-
+        # Select the specified number of speakers randomly
+        if num_speakers > self.num_agents:
+            selected_agent_ids = all_agent_ids
         else:
-            # Use original urgency-based selection
-            logger.info(f"Evaluating speaking urgency for discussion round {self.discussionRound}")
+            selected_agent_ids = all_agent_ids[:num_speakers]
 
-            # Collect speaking urgency from all agents
-            urgency_scores = []
-            with ThreadPoolExecutor(max_workers=min(8, self.num_agents)) as executor:
-                futures = [executor.submit(agent.speaking_urgency) for agent in self.agents]
-                # Wait for all futures to complete
-                for future in tqdm(futures, desc="Evaluating Speaking Urgency", total=len(futures), disable=True):
-                    result = future.result()  # This blocks until the task completes
-                    if result:
-                        urgency_scores.append(result)
+        # Get the corresponding agent objects
+        speakers = [self.agents[agent_id] for agent_id in selected_agent_ids]
 
-            # Sort agents by urgency score (highest to lowest)
-            sorted_agents = sorted(urgency_scores, key=lambda x: x['urgency_score'], reverse=True)
-
-            # Log the urgency scores
-            urgency_str = "\n".join([
-                f"Cardinal {score['agent_id']} - {self.agents[score['agent_id']].name}: {score['urgency_score']}/100\n"
-                f"Reasoning: {score['reasoning']}"
-                for score in sorted_agents
-            ])
-            logger.info(f"Speaking urgency for round {self.discussionRound}:\n{urgency_str}")
-
-            # Determine which agents will speak in this round based on urgency
-            if num_speakers > self.num_agents:
-                selected_agent_ids = [score['agent_id'] for score in sorted_agents]
-            else:
-                # Take the top N agents by urgency score
-                selected_agent_ids = [score['agent_id'] for score in sorted_agents[:num_speakers]]
-
-            # Get the corresponding agent objects
-            speakers = [self.agents[agent_id] for agent_id in selected_agent_ids]
+        # Log the random selection
+        selected_str = "\n".join([
+            f"Cardinal {agent_id} - {self.agents[agent_id].name}"
+            for agent_id in selected_agent_ids
+        ])
+        logger.info(f"Randomly selected speakers for round {self.discussionRound}:\n{selected_str}")
 
         logger.info(f"Starting discussion round {self.discussionRound} with {len(speakers)} speakers")
 
         # Collect discussions from selected speakers
         futures = []
         with ThreadPoolExecutor(max_workers=min(8, len(speakers))) as executor:
-            # Create a list to store agent-urgency pairs
-            agent_urgency_pairs = []
-
-            # Match each selected agent with their urgency data
+            # Submit the discuss task for each speaker
             for agent in speakers:
-                agent_id = agent.agent_id
-                # Find the corresponding urgency data
-                urgency_data = None
-                for score in urgency_scores:
-                    if score['agent_id'] == agent_id:
-                        urgency_data = score
-                        break
-
-                # Submit the discuss task with the urgency data
-                futures.append(executor.submit(agent.discuss, urgency_data))
+                futures.append(executor.submit(agent.discuss))
 
             # Wait for all futures to complete
             for future in tqdm(futures, desc="Collecting Discussion", total=len(futures), disable=True):
@@ -189,7 +134,7 @@ class ConclaveEnv:
                 self.agent_discussion_participation[agent_id] = []
             self.agent_discussion_participation[agent_id].append(self.discussionRound - 1)  # -1 because we already incremented
 
-        # Log the discussion with urgency included (or random selection note)
+        # Log the discussion
         discussion_str = "\n\n".join([
             f"Cardinal {comment['agent_id']} - {self.agents[comment['agent_id']].name} "
             f"{comment['message']}"

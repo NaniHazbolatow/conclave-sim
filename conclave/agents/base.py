@@ -141,91 +141,11 @@ class Agent:
             # Default vote if there's an error
             self.logger.error(f"Error in LlmAgent {self.agent_id} voting: {e}")
 
-    def speaking_urgency(self) -> Dict[str, any]:
-        """
-        Calculate how urgently the agent wants to speak in the next discussion round.
 
-        Returns:
-            Dict with urgency_score (1-100) and reasoning
-        """
-        personal_vote_history = self.promptize_vote_history()
-        ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history(self.agent_id)
 
-        # Use prompt manager to get formatted prompt
-        prompt = self.prompt_manager.get_speaking_urgency_prompt(
-            agent_name=self.name,
-            background=self.background,
-            candidates_list=self.env.list_candidates_for_prompt(),
-            personal_vote_history=personal_vote_history,
-            ballot_results_history=ballot_results_history,
-            discussion_history=discussion_history
-        )
-
-        # Define urgency evaluation tool
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "evaluate_speaking_urgency",
-                    "description": "Evaluate how urgently you want to speak",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "urgency_score": {
-                                "type": "integer",
-                                "description": "Your urgency score (1-100)"
-                            },
-                            "reasoning": {
-                                "type": "string",
-                                "description": "Explain why you rated your urgency at this level"
-                            }
-                        },
-                        "required": ["urgency_score", "reasoning"]
-                    }
-                }
-            }
-        ]
-
-        try:
-            # Use robust tool calling
-            messages = [{"role": "user", "content": prompt}]
-            result = self.tool_caller.call_tool(messages, tools, tool_choice="evaluate_speaking_urgency")
-            
-            if result.success and result.arguments:
-                urgency_score = result.arguments.get("urgency_score", 50)
-                reasoning = result.arguments.get("reasoning", "No reasoning provided.")
-                
-                # Ensure score is in range 1-100
-                urgency_score = max(1, min(100, int(urgency_score)))
-                
-                return {
-                    "agent_id": self.agent_id,
-                    "urgency_score": urgency_score,
-                    "reasoning": reasoning
-                }
-            else:
-                self.logger.warning(f"Speaking urgency tool calling failed: {result.error}")
-                return {
-                    "agent_id": self.agent_id,
-                    "urgency_score": 50,
-                    "reasoning": f"Tool calling failed: {result.error}"
-                }
-
-        except Exception as e:
-            self.logger.error(f"Error in LlmAgent {self.agent_id} speaking urgency: {e}")
-            return {
-                "agent_id": self.agent_id,
-                "urgency_score": 50,
-                "reasoning": f"Error during urgency evaluation: {e}"
-            }
-
-    def discuss(self, urgency_data: Optional[Dict] = None) -> Optional[Dict]:
+    def discuss(self) -> Optional[Dict]:
         """
         Generate a discussion contribution about the conclave proceedings.
-
-        Args:
-            urgency_data: Optional dictionary containing urgency score and reasoning
 
         Returns:
             Dict with agent_id and message if successful, None otherwise
@@ -233,14 +153,6 @@ class Agent:
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
         discussion_history = self.env.get_discussion_history(self.agent_id)
-
-        # Include speaking urgency information if available
-        urgency_context = ""
-        if urgency_data and 'urgency_score' in urgency_data and 'reasoning' in urgency_data:
-            urgency_context = self.prompt_manager.get_urgency_context(
-                urgency_score=urgency_data['urgency_score'],
-                urgency_reasoning=urgency_data['reasoning']
-            )
 
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_discussion_prompt(
@@ -250,7 +162,6 @@ class Agent:
             personal_vote_history=personal_vote_history,
             ballot_results_history=ballot_results_history,
             discussion_history=discussion_history,
-            urgency_context=urgency_context,
             discussion_min_words=self.config.get_discussion_min_words(),
             discussion_max_words=self.config.get_discussion_max_words()
         )
