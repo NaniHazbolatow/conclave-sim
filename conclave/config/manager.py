@@ -136,6 +136,14 @@ class ConfigManager:
         """Check if fallback to prompt-based tool calling is enabled."""
         return self.get_tool_calling_config().get("enable_fallback", True)
     
+    def get_llm_max_retries(self) -> int:
+        """Get maximum retry attempts for LLM calls."""
+        return self.get_tool_calling_max_retries()
+    
+    def get_llm_backoff(self) -> float:
+        """Get retry backoff seconds for LLM calls."""
+        return self.get_tool_calling_config().get("retry_backoff_sec", 2.0)
+    
     # Simulation configuration methods
     def get_num_cardinals(self) -> int:
         """Get the number of cardinals to include in simulation."""

@@ -20,6 +20,7 @@ llm:
   tool_calling:
     max_retries: 3          # Maximum number of retry attempts for failed tool calls
     retry_delay: 1.0        # Delay in seconds between retries
+    retry_backoff_sec: 2    # Exponential backoff multiplier for retries
     enable_fallback: true   # Use prompt-based tool calling if native fails
   
   # Local Model Configuration (HuggingFace models)
@@ -27,8 +28,8 @@ llm:
     # Recommended models for different hardware:
     # - For powerful GPUs: "Qwen/Qwen2.5-3B-Instruct" 
     # - For limited memory: "Qwen/Qwen2.5-1.5B-Instruct"
-    model_name: "Qwen/Qwen2.5-1.5B-Instruct"
-    #model_name: "meta-llama/llama-3.1-8b-instruct"
+    #model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name: "meta-llama/llama-3.1-8b-instruct"
 
     # Hardware acceleration (auto-detects best option)
     device: "auto"  # Options: "auto", "cpu", "cuda" (NVIDIA), "mps" (M1/M2 Mac)
@@ -97,16 +98,16 @@ embeddings:
 # Core simulation behavior and rules
 simulation:
   # Debugging and monitoring
-  log_level: "INFO"         # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  log_level: "DEBUG"         # Options: "DEBUG", "INFO", "WARNING", "ERROR"
   performance_logging: true # Track timing and performance metrics
   
   # Cardinal selection
-  num_cardinals: 10          # Number of cardinals to include in simulation (from CSV head)
+  num_cardinals: 8          # Number of cardinals to include in simulation (from CSV head)
   
   # Discussion structure
-  max_speakers_per_round: 5     # Maximum cardinals who can speak per round
-  num_discussions: 2        # Number of complete discussion cycles to run per election round
-  max_election_rounds: 10    # Maximum number of full election rounds before stopping (no winner required)
+  max_speakers_per_round: 8     # Maximum cardinals who can speak per round
+  num_discussions: 1        # Number of complete discussion cycles to run per election round
+  max_election_rounds: 5    # Maximum number of full election rounds before stopping (no winner required)
   randomize_speaking_order: true  # Whether to randomize the order of speakers in discussion rounds
   discussion_length:
     min_words: 100          # Minimum word count for discussion contributions

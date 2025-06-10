@@ -7,6 +7,7 @@ It scrapes detailed background information from collegeofcardinalsreport.com and
 GPT-4o-mini to generate brief ideological descriptions for each cardinal.
 
 The output CSV contains:
+- Cardinal_ID: Sequential numeric ID for each cardinal
 - Name: Cardinal's name
 - Background: Detailed background information
 - Ideological_Stance: Brief ideological description
@@ -31,6 +32,19 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from conclave.llm.client import RemoteLLMClient
+
+
+def generate_cardinal_id(index: int) -> str:
+    """
+    Generate a sequential ID for a cardinal based on their index.
+    
+    Args:
+        index: The cardinal's index in the list (0-based)
+        
+    Returns:
+        A sequential numeric ID as string
+    """
+    return str(index)
 
 
 def to_ascii(text):
@@ -189,17 +203,41 @@ def generate_ideological_descriptions(cardinal_info, llm_client):
 
 
 def save_to_csv(cardinal_info, output_path):
-    """Save cardinal information to CSV file."""
+    """Save cardinal information to CSV file with Cardinal_ID as first column."""
     print(f"Saving data to {output_path}...")
+    
+    # Generate Cardinal IDs and check for duplicates
+    cardinal_ids = []
+    names_list = list(cardinal_info.keys())
+    
+    for index, name in enumerate(names_list):
+        cardinal_id = generate_cardinal_id(index)
+        cardinal_ids.append(cardinal_id)
+        cardinal_info[name]["Cardinal_ID"] = cardinal_id
+        print(f"  {name} -> {cardinal_id}")
+    
+    # Check for duplicate IDs (shouldn't happen with sequential numbers)
+    unique_ids = set(cardinal_ids)
+    if len(unique_ids) != len(cardinal_ids):
+        print("\nError: Found duplicate IDs!")
+        for i, cardinal_id in enumerate(cardinal_ids):
+            if cardinal_ids.count(cardinal_id) > 1:
+                print(f"  Duplicate ID {cardinal_id} for {names_list[i]}")
+        print("This should not happen with sequential numbering.")
+        sys.exit(1)
     
     with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(['Name', 'Background', 'Ideological_Stance'])
+        # Put Cardinal_ID first in the column order
+        writer.writerow(['Cardinal_ID', 'Name', 'Background', 'Ideological_Stance'])
         
         for name, data in cardinal_info.items():
+            cardinal_id = data.get("Cardinal_ID", "")
             background = data.get("Background", "").replace('\n', ' ')
             ideological_stance = data.get("Ideological_Stance", "")
-            writer.writerow([name, background, ideological_stance])
+            writer.writerow([cardinal_id, name, background, ideological_stance])
+    
+    print(f"Generated {len(cardinal_ids)} unique cardinal IDs")
 
 
 def main():
@@ -233,6 +271,9 @@ def main():
                     "Background": row['Background'],
                     "formatted_name": format_name_for_url(name)
                 }
+                # Add existing Cardinal_ID if present
+                if 'Cardinal_ID' in row and pd.notna(row['Cardinal_ID']):
+                    cardinal_info[name]["Cardinal_ID"] = str(row['Cardinal_ID'])
                 # Add existing ideological stance if present
                 if 'Ideological_Stance' in row and pd.notna(row['Ideological_Stance']):
                     cardinal_info[name]["Ideological_Stance"] = row['Ideological_Stance']
@@ -271,6 +312,7 @@ def main():
     print(f"\nProcessing complete!")
     print(f"Total cardinals found: {total_cardinals}")
     print(f"Cardinals with complete data: {processed_cardinals}")
+    print(f"Unique Cardinal IDs generated: {len(set(data.get('Cardinal_ID', '') for data in cardinal_info.values() if data.get('Cardinal_ID')))}")
     print(f"Output saved to: {output_path}")
     
     # Optional: Also save a backup in the scripts directory

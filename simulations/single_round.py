@@ -36,7 +36,7 @@ def main():
         if counter > 20:
             break
         agent = Agent(
-            agent_id=idx,
+            agent_id=row['Cardinal_ID'],  # Use the Cardinal_ID from CSV instead of DataFrame index
             name=row['Name'],
             background=row['Background'],
             env=env
@@ -44,7 +44,7 @@ def main():
         env.agents.append(agent)
 
     # Set the number of agents in the environment
-    env.num_agents = len(env.agents)
+    env.freeze_agent_count()  # Freeze count after loading all agents
     logger.info(f"\n{env.list_candidates_for_prompt(randomize=False)}")
     
     # Generate initial internal stances for all agents before starting

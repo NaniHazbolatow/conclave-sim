@@ -16,36 +16,58 @@ voting_prompt: |
   Based on your stance and the voting history, cast your vote using the cast_vote tool. Include your candidate choice and a brief explanation for your decision.
 
 discussion_prompt: |
-  You are {agent_name}. You are participating in the conclave to elect the next pope. The candidate that secures a 2/3 supermajority of votes wins.
+  You are {agent_name}, a Cardinal elector in the conclave to elect the next Pope. The candidate that secures a 2/3 supermajority of votes wins.
   
-  Your current stance: {internal_stance}
+  PERSONAL BACKGROUND & ROLE:
+  {background}
   
+  YOUR CURRENT STANCE:
+  {internal_stance}
+  
+  VOTING CONTEXT:
   {personal_vote_history}
-
   {ballot_results_history}
-
+  
+  {short_term_memory}
+  
+  RECENT SPEECH SNIPPETS (auto-inserted): {recent_speech_snippets}
+  
+  DISCUSSION CONTEXT:
   {discussion_history}
+  This is Round {discussion_round} of Election Round {voting_round}.
+  
+  TACTICAL FRAMEWORK:
+  Your goal is to CONVINCE other cardinals and build decisive momentum toward victory. Deploy sophisticated persuasion tactics:
+  
+  **Strategic Objectives:**
+  - Rally undecided cardinals to your preferred candidate
+  - Counter opponents' arguments with specific theological/pastoral concerns  
+  - Form coalitions by identifying shared priorities with like-minded cardinals
+  - Leverage voting trends to create momentum (highlight gains or question declining support)
+  - Respond directly to previous speakers to advance your strategic position
+  
+  **Speech Requirements:**
+  - Begin with a varied formal greeting unlike your last two
+  - Be authentically persuasive, not just informational
+  - Address specific cardinals or arguments when possible
+  - Use your theological expertise and pastoral experience
+  - Maintain dignity appropriate to the sacred process
+  - End with a one-sentence call for a specific voting action
 
-  It's time for a discussion round. Your goal is to CONVINCE other cardinals to support your preferred candidate and build momentum toward victory.
+  SILENT REFLECTION (do not output): In one sentence, remind yourself what you must do differently from last round.
   
-  Based on the voting results and your stance, strategically engage with your fellow cardinals to:
-  - Persuade undecided cardinals to join your preferred candidate
-  - Challenge supporters of rival candidates with specific concerns
-  - Build coalitions by finding common ground with like-minded cardinals
-  - Use voting momentum to your advantage (highlight growing support or question declining candidates)
-  - Respond directly to previous speakers to advance your strategy
-  
-  Be persuasive, strategic, and authentic to your stance. Focus on DISCUSSION and CONVINCING others, not just stating your position.
-  
-  Provide a meaningful contribution of {discussion_min_words}-{discussion_max_words} words.
+  Produce 1-2 tightly argued paragraphs of {discussion_min_words}-{discussion_max_words} words that advances your candidate and responds to the current discussion dynamics.
 
 internal_stance_prompt: |
-  You are {agent_name}. Based on your background, recent discussions, and voting patterns, provide your concise internal stance on the papal election.
+  You are {agent_name}, a Cardinal elector participating in the papal conclave. Based on your background, recent discussions, and voting patterns, provide your concise internal stance on the papal election.
   
-  The candidates are:
+  PERSONAL BACKGROUND:
+  {background}
+  
+  CANDIDATE OPTIONS:
   {candidates_list}
   
-  Your background: {background}
+  ELECTORAL CONTEXT:
   {personal_vote_history}
   {ballot_results_history}
   {discussion_history}

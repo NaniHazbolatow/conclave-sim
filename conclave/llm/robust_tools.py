@@ -140,34 +140,71 @@ class JSONParser:
         if not text:
             return ToolCallResult(success=False, error="Empty response")
         
+        logger.debug(f"=== PARSING TOOL RESPONSE ===")
+        logger.debug(f"Input text length: {len(text)}")
+        logger.debug(f"Input text preview: {repr(text[:100])}")
+        
         # Clean the text first
         cleaned_text = cls.clean_text(text)
+        logger.debug(f"Cleaned text length: {len(cleaned_text)}")
+        logger.debug(f"Cleaned text preview: {repr(cleaned_text[:100])}")
         
         # Try each extraction method
-        for method in cls.extract_json_methods():
+        for i, method in enumerate(cls.extract_json_methods()):
+            method_name = method.__name__
+            logger.debug(f"Trying extraction method {i+1}: {method_name}")
+            
             try:
                 json_text = method(cleaned_text)
                 if json_text:
+                    logger.debug(f"Method {method_name} extracted: {repr(json_text[:200])}")
                     # Try to parse the extracted JSON
-                    parsed = json.loads(json_text)
-                    
-                    # Validate the structure
-                    if isinstance(parsed, dict) and 'function' in parsed:
-                        return ToolCallResult(
-                            success=True,
-                            function_name=parsed.get('function'),
-                            arguments=parsed.get('parameters', {}),
-                            raw_response=text,
-                            strategy_used=ToolCallStrategy.PROMPT_BASED
-                        )
-            except json.JSONDecodeError:
-                continue
+                    try:
+                        parsed = json.loads(json_text)
+                        logger.debug(f"Method {method_name}: Successfully parsed JSON")
+                        
+                        # Validate the structure
+                        if isinstance(parsed, dict) and 'function' in parsed:
+                            logger.debug(f"SUCCESS: Method {method_name} - Valid tool response structure")
+                            logger.debug(f"Function: {parsed.get('function')}")
+                            
+                            # Get parameters and apply type coercion for common issues
+                            parameters = parsed.get('parameters', {})
+                            
+                            # Special handling for cast_vote function
+                            if parsed.get('function') == 'cast_vote' and 'candidate' in parameters:
+                                candidate = parameters['candidate']
+                                # Convert string candidate IDs to integers
+                                if isinstance(candidate, str) and candidate.isdigit():
+                                    logger.debug(f"Converting string candidate '{candidate}' to integer")
+                                    parameters['candidate'] = int(candidate)
+                                elif isinstance(candidate, str):
+                                    logger.warning(f"Invalid candidate string value: '{candidate}'")
+                            
+                            logger.debug(f"Parameters (after coercion): {parameters}")
+                            return ToolCallResult(
+                                success=True,
+                                function_name=parsed.get('function'),
+                                arguments=parameters,
+                                raw_response=text,
+                                strategy_used=ToolCallStrategy.PROMPT_BASED
+                            )
+                        else:
+                            logger.debug(f"Method {method_name}: Valid JSON but missing 'function' key or not a dict")
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"Method {method_name}: JSON decode error - {e}")
+                        continue
+                else:
+                    logger.debug(f"Method {method_name}: No JSON text extracted")
             except Exception as e:
-                logger.debug(f"JSON extraction method {method.__name__} failed: {e}")
+                logger.debug(f"Method {method_name}: General exception - {e}")
                 continue
+        
+        logger.debug("All JSON extraction methods failed, trying fallback text parsing")
         
         # If all parsing failed, try to extract just the message content
         # Look for common patterns in responses
+        logger.debug("Trying message patterns...")
         message_patterns = [
             r'"message"\s*:\s*"([^"]+)"',
             r"'message'\s*:\s*'([^']+)'",
@@ -175,11 +212,49 @@ class JSONParser:
             r'message:\s*([^\n,}]+)',
         ]
         
-        for pattern in message_patterns:
+        # Special patterns for stance generation
+        stance_patterns = [
+            r'"stance"\s*:\s*"([^"]+)"',
+            r"'stance'\s*:\s*'([^']+)'",
+            r'stance:\s*"([^"]+)"',
+            r'stance:\s*([^\n,}]+)',
+            # Match text that looks like a stance (starts with "My" or "I")
+            r'(?:My|I)\s+[^{}"]*(?:candidate|choice|prefer|support)[^{}"]*\.(?:[^{}"]*\.)*',
+        ]
+        
+        # Special patterns for vote casting
+        vote_patterns = [
+            r'"candidate"\s*:\s*(\d+)',
+            r"'candidate'\s*:\s*(\d+)",
+            r'candidate:\s*(\d+)',
+            r'vote(?:\s+for)?:?\s*(\d+)',
+            r'(?:I\s+vote\s+for|voting\s+for|choose|selecting)\s+(?:cardinal\s+)?(\d+)',
+            r'Cardinal\s+(\d+)',
+            r'ID\s*(\d+)',
+            # More flexible patterns for when models use different formats
+            r'(?:candidate|choice|selected?)[\s:]*(\d+)',
+            r'(\d+)(?:\s*[,:]?\s*because|\s*due\s+to|\s*for\s+his|\s*as\s+he)',
+            # Look for standalone single digits (0-4) that could be votes
+            r'(?:^|\s)([0-4])(?:\s|$|[,.])',
+        ]
+        
+        explanation_patterns = [
+            r'"explanation"\s*:\s*"([^"]+)"',
+            r"'explanation'\s*:\s*'([^']+)'",
+            r'explanation:\s*"([^"]+)"',
+            r'explanation:\s*([^\n,}]+)',
+            r'because:?\s*([^\n]+)',
+            r'reason:?\s*([^\n]+)',
+        ]
+        
+        for i, pattern in enumerate(message_patterns):
+            logger.debug(f"Trying message pattern {i+1}: {pattern}")
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
+                logger.debug(f"Message pattern {i+1} matched!")
                 message = match.group(1).strip()
                 if message:
+                    logger.debug(f"Extracted message: {message[:100]}...")
                     return ToolCallResult(
                         success=True,
                         function_name="speak_message",  # Assume default function
@@ -188,6 +263,131 @@ class JSONParser:
                         strategy_used=ToolCallStrategy.PROMPT_BASED
                     )
         
+        logger.debug("No message patterns matched, trying stance patterns...")
+        # Try stance patterns
+        for i, pattern in enumerate(stance_patterns):
+            logger.debug(f"Trying stance pattern {i+1}: {pattern}")
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                stance = match.group(1).strip() if len(match.groups()) > 0 else match.group(0).strip()
+                if stance and len(stance.split()) >= 20:  # Minimum viable stance
+                    return ToolCallResult(
+                        success=True,
+                        function_name="generate_stance",
+                        arguments={"stance": stance},
+                        raw_response=text,
+                        strategy_used=ToolCallStrategy.PROMPT_BASED
+                    )
+        
+        # Last resort: Extract any coherent stance-like text from the response
+        # This handles cases where the model provides a good response but poor JSON formatting
+        if 'stance' in text.lower() or any(word in text.lower() for word in ['candidate', 'prefer', 'support', 'church', 'theological']):
+            # Clean up the text and extract meaningful content
+            lines = text.split('\n')
+            content_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                # Skip obvious JSON artifacts and metadata
+                if line and not line.startswith('{') and not line.startswith('}') and not line.startswith('"'):
+                    # Remove leading/trailing quotes if present
+                    line = line.strip('\'"')
+                    if len(line) > 10 and not line.lower().startswith(('error', 'json', 'format')):
+                        content_lines.append(line)
+            
+            if content_lines:
+                extracted_text = ' '.join(content_lines)
+                word_count = len(extracted_text.split())
+                
+                # If it looks like a reasonable stance (30+ words), use it
+                if word_count >= 30:
+                    return ToolCallResult(
+                        success=True,
+                        function_name="generate_stance",
+                        arguments={"stance": extracted_text},
+                        raw_response=text,
+                        strategy_used=ToolCallStrategy.PROMPT_BASED
+                    )
+        
+        # Try vote patterns for cast_vote function
+        candidate_id = None
+        explanation = None
+        
+        # Debug: Check if this looks like a voting response
+        if any(word in text.lower() for word in ['vote', 'candidate', 'cardinal', 'elect']):
+            logger.debug(f"Attempting vote parsing on response: {text[:200]}...")
+        
+        # Extract candidate ID
+        logger.debug("Trying vote patterns to extract candidate ID...")
+        for i, pattern in enumerate(vote_patterns):
+            logger.debug(f"Trying vote pattern {i+1}: {pattern}")
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                logger.debug(f"Vote pattern {i+1} matched: {match.group(0)}")
+                try:
+                    candidate_id = int(match.group(1))
+                    logger.debug(f"SUCCESS: Found candidate ID {candidate_id} using pattern: {pattern}")
+                    break
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Vote pattern {i+1} matched but failed to extract ID: {e}")
+                    continue
+            else:
+                logger.debug(f"Vote pattern {i+1} did not match")
+        
+        # Extract explanation
+        logger.debug("Trying explanation patterns...")
+        for i, pattern in enumerate(explanation_patterns):
+            logger.debug(f"Trying explanation pattern {i+1}: {pattern}")
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                logger.debug(f"Explanation pattern {i+1} matched!")
+                explanation = match.group(1).strip()
+                # Clean up common artifacts
+                explanation = explanation.rstrip('",}')
+                if explanation and len(explanation) > 5:
+                    logger.debug(f"Extracted explanation: {explanation[:100]}...")
+                    break
+            else:
+                logger.debug(f"Explanation pattern {i+1} did not match")
+        
+        # If we found a candidate ID, try to return a vote result
+        if candidate_id is not None:
+            logger.debug(f"Found candidate ID: {candidate_id}, explanation: {explanation}")
+            # If no explanation found, try to extract any meaningful text
+            if not explanation:
+                logger.debug("No explanation found, trying to extract from text lines...")
+                # Look for any descriptive text that might be an explanation
+                lines = text.split('\n')
+                explanation_candidates = []
+                
+                for line in lines:
+                    line = line.strip().strip('\'"{}",')
+                    # Skip JSON artifacts and short lines
+                    if (line and len(line) > 10 and 
+                        not line.lower().startswith(('function', 'parameters', 'candidate', 'explanation')) and
+                        not line.startswith('{') and not line.startswith('}')):
+                        explanation_candidates.append(line)
+                
+                if explanation_candidates:
+                    explanation = explanation_candidates[0]  # Take the first meaningful line
+                    logger.debug(f"Extracted fallback explanation: {explanation}")
+                else:
+                    explanation = "Vote cast based on discussions and candidate qualifications"
+                    logger.debug("Using default explanation")
+            
+            logger.debug(f"SUCCESS: Returning vote result - candidate: {candidate_id}, explanation: {explanation}")
+            return ToolCallResult(
+                success=True,
+                function_name="cast_vote",
+                arguments={"candidate": candidate_id, "explanation": explanation},
+                raw_response=text,
+                strategy_used=ToolCallStrategy.PROMPT_BASED
+            )
+        else:
+            logger.debug("No candidate ID found in response")
+        
+        logger.debug("FAILURE: Could not parse any tool response from text")
+        logger.debug(f"Final error state - text length: {len(text)}, contains vote keywords: {any(word in text.lower() for word in ['vote', 'candidate', 'cardinal'])}")
         return ToolCallResult(
             success=False, 
             error=f"Could not parse JSON from response",
@@ -348,9 +548,34 @@ class RobustToolCaller:
             # Generate response
             response_text = self.llm_client.generate(enhanced_messages)
             
+            # ============== DETAILED LOGGING FOR DEBUGGING ==============
+            self.logger.debug(f"=== RAW LLM RESPONSE FOR {name} ===")
+            self.logger.debug(f"Model: {self.model_name}")
+            self.logger.debug(f"Function: {name}")
+            self.logger.debug(f"Raw response length: {len(response_text)} characters")
+            self.logger.debug(f"Raw response (first 200 chars): {repr(response_text[:200])}")
+            self.logger.debug(f"Raw response (last 200 chars): {repr(response_text[-200:])}")
+            self.logger.debug(f"Full raw response:")
+            self.logger.debug(f"{response_text}")
+            self.logger.debug(f"=== END RAW RESPONSE ===")
+            
+            # Check for specific patterns that might indicate issues
+            if '{' not in response_text:
+                self.logger.warning(f"No JSON braces found in response for {name}")
+            if '"function"' not in response_text:
+                self.logger.warning(f"No 'function' key found in response for {name}")
+            if response_text.count('{') != response_text.count('}'):
+                self.logger.warning(f"Unmatched braces in response for {name}: {response_text.count('{')} open, {response_text.count('}')} close")
+            # ========================================================
+            
             # Parse the response
             result = JSONParser.parse_tool_response(response_text)
             result.strategy_used = ToolCallStrategy.PROMPT_BASED
+            
+            # Log parsing result
+            self.logger.debug(f"Parsing result for {name}: success={result.success}, function={result.function_name}, error={result.error}")
+            if result.success and result.arguments:
+                self.logger.debug(f"Parsed arguments: {result.arguments}")
             
             return result
             
@@ -387,6 +612,9 @@ Description: {description}
             instructions += f'\nExample: {{"function": "cast_vote", "parameters": {{"candidate": 1, "explanation": "Strong leadership and pastoral experience"}}}}\n'
         elif name == "speak_message":
             instructions += f'\nExample: {{"function": "speak_message", "parameters": {{"message": "I believe we need a leader who can unite the Church in these challenging times..."}}}}\n'
+        elif name == "generate_stance":
+            instructions += f'\nExample: {{"function": "generate_stance", "parameters": {{"stance": "My preferred candidate is Cardinal Smith due to his commitment to social justice. The Church should focus on pastoral care and addressing contemporary challenges. I am progressive in my theological position, believing in reform and collaboration. I worry about candidates who prioritize rigid doctrine over pastoral needs. Recent discussions have reinforced my support for synodality and inclusivity."}}}}\n'
+            instructions += "\nIMPORTANT FOR STANCE: Write exactly 75-125 words. Be specific about preferred candidate, Church priorities, theological position, concerns, and recent discussion influence."
         
         instructions += "\nRespond with ONLY the JSON object, no other text:"
         
@@ -398,11 +626,11 @@ Description: {description}
         
         # Add increasingly specific retry instructions
         if attempt == 1:
-            retry_text = "\n\nIMPORTANT: Please ensure your response is in the exact JSON format required. Your previous response may not have been formatted correctly."
+            retry_text = "\n\nIMPORTANT: Please ensure your response is in the exact JSON format required. Your previous response may not have been formatted correctly. Use this exact format: {\"function\": \"function_name\", \"parameters\": {\"param\": \"value\"}}"
         elif attempt == 2:
-            retry_text = "\n\nCRITICAL: You must respond with ONLY a valid JSON object. Do not include any explanatory text before or after the JSON. Format: {\"function\": \"function_name\", \"parameters\": {...}}"
+            retry_text = "\n\nCRITICAL: You must respond with ONLY a valid JSON object. Do not include any explanatory text before or after the JSON. Start with { and end with }. No markdown, no code blocks, no extra text."
         else:
-            retry_text = f"\n\nFINAL ATTEMPT ({attempt}): Respond with NOTHING except the JSON object. No text, no explanations, just the JSON."
+            retry_text = f"\n\nFINAL ATTEMPT ({attempt}): Output ONLY the JSON. Example: {{\"function\": \"generate_stance\", \"parameters\": {{\"stance\": \"Your 75-125 word stance here\"}}}}"
         
         # Add to the last user message
         if enhanced_messages and enhanced_messages[-1].get("role") == "user":

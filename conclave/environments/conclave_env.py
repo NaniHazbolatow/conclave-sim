@@ -23,6 +23,8 @@ class ConclaveEnv:
         self.discussionRound = 0
         # Track which agents participated in which discussion rounds
         self.agent_discussion_participation = {}
+        # Track which agents voted in each round
+        self.voting_participation = {}
         
         # Get configuration for simulation parameters
         self.config = get_config()
@@ -32,25 +34,140 @@ class ConclaveEnv:
         # Get voting configuration
         voting_config = self.simulation_config.get("voting", {})
         self.supermajority_threshold = voting_config.get("supermajority_threshold", 0.667)
+    
+    def freeze_agent_count(self):
+        """Freeze the agent count to match the loaded roster. Call after loading all agents."""
+        self.num_agents = len(self.agents)
 
-    def cast_vote(self, candidate_id: int) -> None:
+    def cast_vote(self, candidate_id: int, voter_id: int = None) -> None:
         with self.voting_lock:
+            # Debug: Log vote before adding
+            old_count = self.votingBuffer.get(candidate_id, 0)
             self.votingBuffer[candidate_id] = self.votingBuffer.get(candidate_id, 0) + 1
+            new_count = self.votingBuffer[candidate_id]
+            
+            logger.debug(f"Vote aggregation: Candidate {candidate_id} votes: {old_count} -> {new_count}")
+            logger.debug(f"Current voting buffer: {dict(self.votingBuffer)}")
+            
+            # Track which agents have voted this round
+            if voter_id is not None:
+                if self.votingRound not in self.voting_participation:
+                    self.voting_participation[self.votingRound] = set()
+                self.voting_participation[self.votingRound].add(voter_id)
+                logger.debug(f"Agent {voter_id} recorded as voting in round {self.votingRound}")
+
+    def _safe_cast(self, agent) -> bool:
+        """
+        Safely execute an agent's cast_vote method with proper exception handling and retry logic.
+        
+        Args:
+            agent: The agent instance to cast vote for
+            
+        Returns:
+            bool: True if vote was cast successfully, False if failed after all retries
+        """
+        import time
+        
+        max_r = self.config.get_llm_max_retries()
+        back = self.config.get_llm_backoff()
+        
+        for attempt in range(1, max_r + 1):
+            try:
+                agent.cast_vote()
+                logger.debug(f"✅ {agent.name} successfully cast vote (attempt {attempt})")
+                return True
+            except Exception as e:
+                logger.warning(f"Vote fail {attempt}/{max_r} for {agent.name}: {e}")
+                if attempt == max_r:
+                    logger.error(f"❌ giving up on {agent.name}")
+                    return False
+                time.sleep(back * attempt)  # simple exponential back-off
+        
+        return False
 
     def run_voting_round(self) -> bool:
         self.votingBuffer.clear()
-        with ThreadPoolExecutor(max_workers=min(8, self.num_agents)) as executor:
-            futures = [executor.submit(agent.cast_vote) for agent in self.agents]
-            # Wait for all futures to complete
-            for future in tqdm(futures, desc="Collecting Votes", total=len(futures), disable=True):
-                future.result()  # This blocks until the task completes
-
+        
+        # Increment voting round BEFORE launching vote threads to prevent race conditions
         self.votingRound += 1
+        
+        # Initialize voting participation tracking for the current round
+        self.voting_participation[self.votingRound] = set()
+        
+        with ThreadPoolExecutor(max_workers=min(8, self.num_agents)) as executor:
+            futures = []
+            
+            # Submit voting tasks using safe casting
+            for agent in self.agents:
+                futures.append(executor.submit(self._safe_cast, agent))
+            
+            # Wait for all futures to complete and log results
+            vote_results = []
+            success_count = 0
+            failed_count = 0
+            
+            for future in tqdm(futures, desc="Collecting Votes", total=len(futures), disable=True):
+                result = future.result()  # This blocks until the task completes (True/False)
+                if result:
+                    success_count += 1
+                    vote_results.append("SUCCESS")
+                else:
+                    failed_count += 1
+                    vote_results.append("FAILED")
+            
+            # Log summary of vote execution
+            max_r = self.config.get_llm_max_retries()
+            logger.info(f"Vote execution summary: {success_count} successful, "
+                       f"{failed_count} permanent failures "
+                       f"(after {max_r} retry attempts each)")
         self.votingHistory.append(self.votingBuffer.copy())
+        
+        # SANITY CHECK: Ensure vote count matches agent count
+        total_votes = sum(self.votingBuffer.values())
+        logger.info(f"=== VOTING SANITY CHECK (Round {self.votingRound}) ===")
+        logger.info(f"Total votes cast: {total_votes}")
+        logger.info(f"Expected votes (num_agents): {self.num_agents}")
+        logger.info(f"Vote count matches: {'✅ YES' if total_votes == self.num_agents else '❌ NO'}")
+        
+        # Handle vote count mismatches
+        if total_votes != self.num_agents:
+            logger.error(f"VOTE COUNT MISMATCH: Expected {self.num_agents}, got {total_votes}")
+            
+            if total_votes < self.num_agents:
+                missing_votes = self.num_agents - total_votes
+                logger.warning(f"Missing {missing_votes} vote(s)")
+                
+                # Identify which agents didn't vote
+                voted_agents = self.voting_participation.get(self.votingRound, set())
+                all_agent_ids = set(range(self.num_agents))
+                non_voting_agents = all_agent_ids - voted_agents
+                
+                if non_voting_agents:
+                    non_voting_names = [f"Cardinal {agent_id} - {self.agents[agent_id].name}" for agent_id in non_voting_agents]
+                    logger.error(f"Agents who didn't vote: {', '.join(non_voting_names)}")
+                    # No forced votes - let the round end with fewer votes
+            
+            elif total_votes > self.num_agents:
+                extra_votes = total_votes - self.num_agents
+                logger.critical(f"CRITICAL: {extra_votes} extra vote(s) detected!")
+                logger.critical("This indicates a serious bug in vote counting or thread safety")
+        else:
+            logger.info("✅ Vote count sanity check PASSED")
+        
+        logger.info(f"=== END SANITY CHECK ===")
+        
+        # Debug: Log the voting buffer before processing results
+        logger.debug(f"=== VOTE AGGREGATION DEBUG ===")
+        logger.debug(f"Final voting buffer: {dict(self.votingBuffer)}")
+        logger.debug(f"Buffer copy added to history: {self.votingBuffer.copy()}")
+        
         voting_results = sorted(self.votingBuffer.items(), key=lambda x: x[1], reverse=True)
+        logger.debug(f"Sorted voting results: {voting_results}")
+        
         voting_results_str = "\n".join([f"Cardinal {i} - {self.agents[i].name}: {votes}" for i, votes in voting_results])
+        logger.debug(f"=== END VOTE AGGREGATION DEBUG ===")
+        
         logger.info(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
-        logger.info(f"Total votes: {sum(self.votingBuffer.values())}")
         
         # Simplified voting summary for console
         import math
@@ -65,7 +182,10 @@ class ConclaveEnv:
         # Show only top 3 candidates to reduce clutter
         top_candidates = voting_results[:3]
         top_results_str = ", ".join([f"{self.agents[i].name}: {votes}" for i, votes in top_candidates])
-        print(f"🗳️  Voting Round {self.votingRound}: {top_results_str} | Threshold: {threshold} votes")
+        
+        # Show all candidates who received votes
+        all_results_str = ", ".join([f"{self.agents[i].name}: {votes}" for i, votes in voting_results])
+        print(f"🗳️  Voting Round {self.votingRound}: {all_results_str} | Threshold: {threshold} votes")
 
         # if the top candidate has more than or equal to the supermajority threshold of the votes
         if voting_results[0][1] >= threshold:
@@ -166,36 +286,10 @@ class ConclaveEnv:
         self.update_internal_stances()
 
     def list_candidates_for_prompt(self, randomize: bool = True) -> str:
-        indices = list(range(self.num_agents))
-        if randomize:
-            random.shuffle(indices)
-        
+        # For voting prompts, don't randomize and show clean ID→Name mapping
         candidates = []
-        for display_order, actual_id in enumerate(indices):
-            # Check if we can load ideological stance from CSV
-            ideological_stance = None
-            try:
-                # Try to load the CSV to get ideological stance
-                import pandas as pd
-                import os
-                if os.path.exists('data/cardinal_electors_2025.csv'):
-                    df = pd.read_csv('data/cardinal_electors_2025.csv')
-                    agent_row = df[df['Name'] == self.agents[actual_id].name]
-                    if not agent_row.empty and 'Ideological_Stance' in df.columns:
-                        ideological_stance = agent_row['Ideological_Stance'].iloc[0]
-                        if pd.notna(ideological_stance):
-                            ideological_stance = str(ideological_stance).strip()
-                        else:
-                            ideological_stance = None
-            except Exception:
-                ideological_stance = None
-            
-            # Use the actual agent ID, not the display order, for consistent mapping
-            if ideological_stance:
-                candidates.append(f"Cardinal {actual_id}: {self.agents[actual_id].name}\nIdeological Stance: {ideological_stance}\n")
-            else:
-                # Just show the name if no ideological stance available
-                candidates.append(f"Cardinal {actual_id}: {self.agents[actual_id].name}\n")
+        for agent in self.agents:
+            candidates.append(f"{agent.agent_id}\t{agent.name}")
         
         result = "\n".join(candidates)
         return result

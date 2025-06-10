@@ -93,7 +93,7 @@ class EmbeddingClient:
         self._load_model()
         
         # Generate embedding
-        embedding = self.model.encode(text, convert_to_numpy=True)
+        embedding = self.model.encode(text, convert_to_numpy=True, show_progress_bar=False)
         
         # Cache if enabled
         if self.cache_embeddings:
@@ -130,7 +130,7 @@ class EmbeddingClient:
         # Compute embeddings for new texts
         if texts_to_compute:
             logger.debug(f"Computing embeddings for {len(texts_to_compute)} new texts...")
-            new_embeddings = self.model.encode(texts_to_compute, convert_to_numpy=True)
+            new_embeddings = self.model.encode(texts_to_compute, convert_to_numpy=True, show_progress_bar=False)
             
             # Cache new embeddings
             if self.cache_embeddings:

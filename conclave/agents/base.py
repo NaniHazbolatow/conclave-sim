@@ -1,5 +1,6 @@
 from ..environments.conclave_env import ConclaveEnv
 import json
+import re
 from typing import Dict, List, Optional
 import logging
 import os
@@ -94,8 +95,15 @@ class Agent:
         
         # Add candidate list to help with voting decision
         candidates_list = self.env.list_candidates_for_prompt(randomize=False)
-        prompt += f"\n\nAvailable candidates:\n{candidates_list}\n"
-        prompt += "IMPORTANT: Use the Cardinal ID number (0, 1, 2, etc.) as shown above when casting your vote."
+        prompt += f"\n\nAvailable candidates (ID → Name):\n{candidates_list}\n"
+        prompt += "\n\nIMPORTANT: You must respond with a valid JSON object in exactly this format:\n\n"
+        prompt += '{"function": "cast_vote", "parameters": {"candidate": 1, "explanation": "..."}}\n\n'
+        prompt += "Tool: cast_vote\nDescription: Cast a vote for a candidate\n\n"
+        prompt += "Required parameters:\n"
+        prompt += "- candidate (integer) (REQUIRED): The numeric ID from the candidate list above.\n"
+        prompt += "- explanation (string) (REQUIRED): Explain why you chose this candidate\n\n"
+        prompt += 'Example: {"function": "cast_vote", "parameters": {"candidate": 1, "explanation": "Strong leadership and pastoral experience"}}\n\n'
+        prompt += "Respond with ONLY the JSON object, no other text:"
         
         # Only log the prompt for debugging, don't print to console
         self.logger.debug(f"Voting prompt for {self.name}: {prompt}")
@@ -112,7 +120,7 @@ class Agent:
                         "properties": {
                             "candidate": {
                                 "type": "integer",
-                                "description": "The Cardinal ID number (0, 1, 2, etc.) of the candidate to vote for. Must match the Cardinal ID shown in the candidate list."
+                                "description": "Numeric ID from the candidate list"
                             },
                             "explanation": {
                                 "type": "string",
@@ -129,44 +137,58 @@ class Agent:
             messages = [{"role": "user", "content": prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="cast_vote")
             
+            # Debug: Log the full tool calling result
+            self.logger.debug(f"=== VOTE TOOL CALLING RESULT FOR {self.name} ===")
+            self.logger.debug(f"Success: {result.success}")
+            self.logger.debug(f"Function: {result.function_name}")
+            self.logger.debug(f"Strategy used: {result.strategy_used}")
+            self.logger.debug(f"Arguments: {result.arguments}")
+            self.logger.debug(f"Error: {result.error}")
+            self.logger.debug(f"Raw response: {result.raw_response}")
+            self.logger.debug(f"=== END VOTE RESULT ===")
+            
             if result.success and result.arguments:
-                vote = result.arguments.get("candidate")
+                candidate_id = result.arguments.get("candidate")
                 reasoning = result.arguments.get("explanation", "No explanation provided.")
+
+                # Validate candidate ID
+                if candidate_id is not None:
+                    try:
+                        cand_id = int(candidate_id)
+                        if not 0 <= cand_id < len(self.env.agents):
+                            raise ValueError(f"ID {cand_id} out of range (0-{len(self.env.agents)-1})")
+                        
+                        candidate_id = cand_id
+                        self.logger.debug(f"Valid candidate ID {candidate_id} selected")
+                    except (ValueError, TypeError) as e:
+                        self.logger.error(f"Invalid candidate ID '{candidate_id}': {e}")
+                        raise ValueError(f"Invalid candidate ID: {candidate_id}")
+                else:
+                    self.logger.error("No candidate ID provided in vote")
+                    raise ValueError("No candidate ID provided")
 
                 # Save vote reasoning
                 self.vote_history.append({
-                    "vote": vote,
+                    "vote": candidate_id,
                     "reasoning": reasoning
                 })
 
-                if vote is not None and isinstance(vote, int):
-                    # Validate vote is within range
-                    if 0 <= vote < len(self.env.agents):
-                        voted_candidate_name = self.env.agents[vote].name
-                        
-                        # Check for potential reasoning-vote mismatch
-                        if reasoning and voted_candidate_name.lower() not in reasoning.lower():
-                            # Check if reasoning mentions a different candidate name
-                            for i, agent in enumerate(self.env.agents):
-                                if i != vote and agent.name.lower() in reasoning.lower():
-                                    self.logger.warning(f"POTENTIAL VOTE MISMATCH: {self.name} voted for {voted_candidate_name} (ID {vote}) but reasoning mentions {agent.name}")
-                                    break
-                        
-                        self.env.cast_vote(vote)
-                        self.logger.info(f"{self.name} ({self.agent_id}) voted for {voted_candidate_name} ({vote}) because\n{reasoning}")
-                        return
-                    else:
-                        self.logger.error(f"Invalid vote ID {vote}: must be between 0 and {len(self.env.agents)-1}")
-                        raise ValueError(f"Invalid vote ID {vote}")
-                else:
-                    raise ValueError("Invalid vote")
+                # Cast the vote
+                self.env.cast_vote(candidate_id, self.agent_id)
+                voted_candidate_name = self.env.agents[candidate_id].name
+                self.logger.info(f"{self.name} ({self.agent_id}) voted for {voted_candidate_name} ({candidate_id}) because\n{reasoning}")
+                self.logger.debug(f"Vote successfully processed: {self.name} -> {voted_candidate_name} (ID: {candidate_id})")
+                return
             else:
                 self.logger.error(f"Tool calling failed: {result.error}")
+                self.logger.debug(f"Tool calling success: {result.success}, arguments: {result.arguments}")
                 raise ValueError(f"Tool calling failed: {result.error}")
 
         except Exception as e:
-            # Default vote if there's an error
+            # Log the error and re-raise to fail hard
             self.logger.error(f"Error in LlmAgent {self.agent_id} voting: {e}")
+            self.logger.debug(f"Voting failed for {self.name}", exc_info=True)
+            raise  # Re-raise the exception to fail hard
 
 
 
@@ -180,6 +202,8 @@ class Agent:
         personal_vote_history = self.promptize_vote_history()
         ballot_results_history = self.promptize_voting_results_history()
         discussion_history = self.env.get_discussion_history(self.agent_id)
+        short_term_memory = self.get_short_term_memory()
+        recent_speech_snippets = self.get_recent_speech_snippets()
         
         # Get current internal stance (generate if needed)
         internal_stance = self.get_internal_stance()
@@ -187,10 +211,15 @@ class Agent:
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_discussion_prompt(
             agent_name=self.name,
+            background=self.background,
             internal_stance=internal_stance,
             personal_vote_history=personal_vote_history,
             ballot_results_history=ballot_results_history,
             discussion_history=discussion_history,
+            short_term_memory=short_term_memory,
+            recent_speech_snippets=recent_speech_snippets,
+            discussion_round=self.env.discussionRound,
+            voting_round=self.env.votingRound,
             discussion_min_words=self.config.get_discussion_min_words(),
             discussion_max_words=self.config.get_discussion_max_words()
         )
@@ -276,7 +305,11 @@ class Agent:
         def promptize_voting_results(results: Dict[str, int]) -> str:
             voting_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
             if results:
-                voting_results_str = "\n".join([f"Cardinal {i} - {self.env.agents[i].name}: {votes}" for i, votes in voting_results])
+                # Map agent indices to Cardinal_ID for display
+                voting_results_str = "\n".join([
+                    f"Cardinal {self.env.agents[i].agent_id} - {self.env.agents[i].name}: {votes}" 
+                    for i, votes in voting_results
+                ])
                 return f"\n{voting_results_str}\n"
             else:
                 return ""
@@ -373,11 +406,84 @@ class Agent:
                 
                 return stance
             else:
-                self.logger.error(f"Failed to generate stance: {result.error}")
-                return ""
+                self.logger.warning(f"Tool calling failed for stance generation: {result.error}")
+                self.logger.info("Attempting fallback direct prompting for stance generation...")
+                
+                # Fallback: Use direct prompting without tool calling
+                return self._generate_stance_fallback(prompt)
             
         except Exception as e:
             self.logger.error(f"Error generating internal stance for {self.name}: {e}")
+            self.logger.info("Attempting fallback direct prompting for stance generation...")
+            return self._generate_stance_fallback(prompt)
+    
+    def _generate_stance_fallback(self, original_prompt: str) -> str:
+        """Fallback method for stance generation when tool calling fails."""
+        try:
+            # Create a simple prompt that asks for direct text output
+            fallback_prompt = f"""{original_prompt}
+
+RESPOND WITH YOUR INTERNAL STANCE DIRECTLY (NO JSON):
+Write exactly 75-125 words covering:
+- Your preferred candidate and why
+- What the Church should focus on
+- Your theological position (traditional/moderate/progressive)
+- Your main concerns
+- How recent discussions influenced you
+
+Start your response immediately with your stance (no introductory text):"""
+
+            messages = [{"role": "user", "content": fallback_prompt}]
+            response = self.llm_client.generate(messages)
+            
+            if response and len(response.strip()) > 20:
+                # Clean up the response
+                stance = response.strip()
+                
+                # Remove any JSON artifacts or formatting
+                stance = re.sub(r'^["\'{}\[\]]+|["\'{}\[\]]+$', '', stance)
+                stance = re.sub(r'\n+', ' ', stance)  # Replace newlines with spaces
+                stance = ' '.join(stance.split())  # Normalize whitespace
+                
+                # Validate word count
+                word_count = len(stance.split())
+                if word_count > 150:
+                    words = stance.split()[:125]
+                    stance = " ".join(words)
+                
+                if word_count >= 30:  # Minimum acceptable length
+                    # Update internal state
+                    import datetime
+                    timestamp = datetime.datetime.now()
+                    self.internal_stance = stance
+                    self.last_stance_update = timestamp
+                    
+                    # Add to stance history
+                    stance_entry = {
+                        "timestamp": timestamp,
+                        "stance": stance,
+                        "voting_round": self.env.votingRound,
+                        "discussion_round": self.env.discussionRound
+                    }
+                    self.stance_history.append(stance_entry)
+                    
+                    self.logger.info(f"{self.name} generated fallback stance (V{self.env.votingRound}.D{self.env.discussionRound})")
+                    self.logger.info(f"=== FALLBACK STANCE: {self.name} ===")
+                    self.logger.info(f"Word count: {len(stance.split())}")
+                    self.logger.info(f"Stance Content:")
+                    self.logger.info(stance)
+                    self.logger.info(f"=== END FALLBACK STANCE: {self.name} ===")
+                    
+                    return stance
+                else:
+                    self.logger.warning(f"Fallback stance too short ({word_count} words)")
+                    return ""
+            else:
+                self.logger.error("Fallback stance generation failed - empty response")
+                return ""
+                
+        except Exception as e:
+            self.logger.error(f"Fallback stance generation failed for {self.name}: {e}")
             return ""
     
     def get_internal_stance(self) -> str:
@@ -417,3 +523,194 @@ class Agent:
             return current_activity != last_activity
         
         return True
+
+    def get_last_three_speeches(self) -> str:
+        """
+        Get this agent's last 3 speeches for style continuity.
+        
+        Returns:
+            Formatted string of last 3 speeches or empty string if less than 3
+        """
+        agent_speeches = []
+        
+        # Go through discussion history and collect this agent's speeches
+        for round_idx, round_comments in enumerate(self.env.discussionHistory):
+            for comment in round_comments:
+                if comment['agent_id'] == self.agent_id:
+                    agent_speeches.append({
+                        'round': round_idx + 1,
+                        'message': comment['message']
+                    })
+        
+        # Get last 3 speeches
+        recent_speeches = agent_speeches[-3:] if len(agent_speeches) >= 3 else []
+        
+        if not recent_speeches:
+            return ""
+        
+        formatted_speeches = []
+        for speech in recent_speeches:
+            formatted_speeches.append(f"Round {speech['round']}: {speech['message']}")
+        
+        return "Your last 3 speeches (for style reference):\n" + "\n\n".join(formatted_speeches) + "\n"
+
+    def get_influential_speeches(self) -> str:
+        """
+        Identify 2 speeches from other cardinals that most influenced vote shifts.
+        
+        Returns:
+            Formatted string of influential speeches
+        """
+        if len(self.env.votingHistory) < 2:
+            return ""
+        
+        # Analyze vote shifts between last two rounds
+        current_votes = self.env.votingHistory[-1] if self.env.votingHistory else {}
+        previous_votes = self.env.votingHistory[-2] if len(self.env.votingHistory) > 1 else {}
+        
+        # Calculate vote changes
+        vote_changes = {}
+        for candidate_id in set(list(current_votes.keys()) + list(previous_votes.keys())):
+            current_count = current_votes.get(candidate_id, 0)
+            previous_count = previous_votes.get(candidate_id, 0)
+            change = current_count - previous_count
+            if change != 0:
+                candidate_name = self.env.agents[candidate_id].name if candidate_id < len(self.env.agents) else f"Cardinal_{candidate_id}"
+                vote_changes[candidate_name] = change
+        
+        if not vote_changes:
+            return ""
+        
+        # Get recent discussion round (most likely to have influenced votes)
+        if not self.env.discussionHistory:
+            return ""
+        
+        last_discussion = self.env.discussionHistory[-1]
+        
+        # Filter out this agent's own speeches and get others' speeches
+        other_speeches = []
+        for comment in last_discussion:
+            if comment['agent_id'] != self.agent_id:
+                speaker_name = self.env.agents[comment['agent_id']].name
+                other_speeches.append({
+                    'speaker': speaker_name,
+                    'message': comment['message']
+                })
+        
+        # Select up to 2 most relevant speeches (simple heuristic: longer speeches often more influential)
+        influential_speeches = sorted(other_speeches, key=lambda x: len(x['message']), reverse=True)[:2]
+        
+        if not influential_speeches:
+            return ""
+        
+        # Format the output
+        result = "Recent speeches that may have influenced vote shifts:\n"
+        for speech in influential_speeches:
+            result += f"\n{speech['speaker']}: {speech['message']}\n"
+        
+        return result
+
+    def get_unresolved_critiques(self) -> str:
+        """
+        Identify major unresolved critiques against preferred candidates.
+        
+        Returns:
+            Formatted string of critiques to address
+        """
+        # Get current preferred candidate from internal stance
+        if not self.internal_stance:
+            return ""
+        
+        # Simple heuristic: look for negative mentions of candidates in recent discussions
+        critiques = []
+        
+        # Look through recent discussion history
+        recent_rounds = self.env.discussionHistory[-2:] if len(self.env.discussionHistory) >= 2 else self.env.discussionHistory
+        
+        for round_comments in recent_rounds:
+            for comment in round_comments:
+                message = comment['message'].lower()
+                speaker_name = self.env.agents[comment['agent_id']].name
+                
+                # Look for criticism keywords combined with candidate names
+                critique_words = ['concern', 'worry', 'problem', 'issue', 'against', 'oppose', 'critique', 'criticism', 'weakness', 'flaw']
+                
+                for agent in self.env.agents:
+                    candidate_name = agent.name.lower()
+                    # Check if candidate is mentioned with critique words
+                    if candidate_name in message and any(word in message for word in critique_words):
+                        if comment['agent_id'] != self.agent_id:  # Don't include own critiques
+                            critiques.append(f"{speaker_name} raised concerns about {agent.name}")
+        
+        if not critiques:
+            return ""
+        
+        # Remove duplicates and limit to most recent
+        unique_critiques = list(set(critiques))[:3]
+        
+        return "Unresolved critiques to address:\n" + "\n".join(f"- {critique}" for critique in unique_critiques) + "\n"
+
+    def get_short_term_memory(self) -> str:
+        """
+        Compile all short-term memory components for discussion prompts.
+        
+        Returns:
+            Formatted short-term memory context
+        """
+        memory_components = []
+        
+        # Add last 3 speeches
+        last_speeches = self.get_last_three_speeches()
+        if last_speeches:
+            memory_components.append(last_speeches)
+        
+        # Add influential speeches
+        influential = self.get_influential_speeches()
+        if influential:
+            memory_components.append(influential)
+        
+        # Add unresolved critiques
+        critiques = self.get_unresolved_critiques()
+        if critiques:
+            memory_components.append(critiques)
+        
+        if not memory_components:
+            return ""
+        
+        return "SHORT-TERM MEMORY:\n" + "\n".join(memory_components) + "\n"
+    
+    def get_recent_speech_snippets(self) -> str:
+        """
+        Get last 2-3 speech snippets from this agent to avoid verbatim reuse.
+        
+        Returns:
+            Formatted string with recent speech snippets for memory cue
+        """
+        agent_speeches = []
+        
+        # Collect this agent's recent speeches
+        for round_idx, round_comments in enumerate(self.env.discussionHistory):
+            for comment in round_comments:
+                if comment['agent_id'] == self.agent_id:
+                    # Extract first ~30 words as snippet
+                    words = comment['message'].split()
+                    snippet = ' '.join(words[:30])
+                    if len(words) > 30:
+                        snippet += "..."
+                    
+                    agent_speeches.append({
+                        'round': round_idx + 1,
+                        'snippet': snippet
+                    })
+        
+        # Get last 2-3 speeches
+        recent_speeches = agent_speeches[-3:] if len(agent_speeches) >= 2 else agent_speeches
+        
+        if not recent_speeches:
+            return "No previous speeches"
+        
+        formatted_snippets = []
+        for speech in recent_speeches:
+            formatted_snippets.append(f"Round {speech['round']}: \"{speech['snippet']}\"")
+        
+        return " | ".join(formatted_snippets)
