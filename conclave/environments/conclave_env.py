@@ -26,6 +26,10 @@ class ConclaveEnv:
         self.config = get_config()
         self.simulation_config = self.config.get_simulation_config()
         self.max_speakers_per_round = self.simulation_config.get("max_speakers_per_round", 5)
+        
+        # Get voting configuration
+        voting_config = self.simulation_config.get("voting", {})
+        self.supermajority_threshold = voting_config.get("supermajority_threshold", 0.667)
 
     def cast_vote(self, candidate_id: int) -> None:
         with self.voting_lock:
