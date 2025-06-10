@@ -85,9 +85,9 @@ class Agent:
             discussion_history=discussion_history
         )
         
-        if (self.agent_id == 0):
-            print(prompt)
-        self.logger.info(prompt)
+        # Only log the prompt for debugging, don't print to console
+        self.logger.debug(f"Voting prompt for {self.name}: {prompt}")
+        
         # Define vote tool
         tools = [
             {
@@ -288,7 +288,7 @@ class Agent:
 
                 # Log the discussion contribution
                 self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
-                print(f"\nCardinal {self.agent_id} - {self.name} speaks:\n{message}\n")
+                # Don't print individual speaking to console - it will be shown in the summary
 
                 # Return the discussion contribution
                 return {

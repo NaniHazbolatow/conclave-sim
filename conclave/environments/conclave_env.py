@@ -40,7 +40,7 @@ class ConclaveEnv:
         with ThreadPoolExecutor(max_workers=min(8, self.num_agents)) as executor:
             futures = [executor.submit(agent.cast_vote) for agent in self.agents]
             # Wait for all futures to complete
-            for future in tqdm(futures, desc="Collecting Votes", total=len(futures)):
+            for future in tqdm(futures, desc="Collecting Votes", total=len(futures), disable=True):
                 future.result()  # This blocks until the task completes
 
         self.votingRound += 1
@@ -49,8 +49,8 @@ class ConclaveEnv:
         voting_results_str = "\n".join([f"Cardinal {i} - {self.agents[i].name}: {votes}" for i, votes in voting_results])
         logger.info(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
         logger.info(f"Total votes: {sum(self.votingBuffer.values())}")
-        print(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
-        print(f"Total votes: {sum(self.votingBuffer.values())}")
+        
+        # Simplified voting summary for console
         threshold = self.num_agents * self.supermajority_threshold
         
         # Check if any votes were cast
@@ -59,13 +59,16 @@ class ConclaveEnv:
             self.votingBuffer.clear()
             return False
             
-        print(f"most votes: {voting_results[0][1]}, threshold: {threshold} (supermajority: {self.supermajority_threshold*100:.1f}%)")
+        # Show only top 3 candidates to reduce clutter
+        top_candidates = voting_results[:3]
+        top_results_str = ", ".join([f"{self.agents[i].name}: {votes}" for i, votes in top_candidates])
+        print(f"🗳️  Voting Round {self.votingRound}: {top_results_str} | Threshold: {threshold:.1f} votes")
 
         # if the top candidate has more than the supermajority threshold of the votes
         if voting_results[0][1] > threshold:
             top_candidate = voting_results[0][0]
             self.winner = top_candidate
-            print(f"Cardinal {top_candidate} wins!")
+            print(f"🎉 Cardinal {self.agents[top_candidate].name} elected Pope!")
             return True
 
         self.votingBuffer.clear()
@@ -124,7 +127,7 @@ class ConclaveEnv:
             with ThreadPoolExecutor(max_workers=min(8, self.num_agents)) as executor:
                 futures = [executor.submit(agent.speaking_urgency) for agent in self.agents]
                 # Wait for all futures to complete
-                for future in tqdm(futures, desc="Evaluating Speaking Urgency", total=len(futures)):
+                for future in tqdm(futures, desc="Evaluating Speaking Urgency", total=len(futures), disable=True):
                     result = future.result()  # This blocks until the task completes
                     if result:
                         urgency_scores.append(result)
@@ -172,7 +175,7 @@ class ConclaveEnv:
                 futures.append(executor.submit(agent.discuss, urgency_data))
 
             # Wait for all futures to complete
-            for future in tqdm(futures, desc="Collecting Discussion", total=len(futures)):
+            for future in tqdm(futures, desc="Collecting Discussion", total=len(futures), disable=True):
                 result = future.result()  # This blocks until the task completes
                 if result:
                     round_comments.append(result)
@@ -193,13 +196,17 @@ class ConclaveEnv:
             for comment in round_comments
         ])
         logger.info(f"Discussion round {self.discussionRound} completed.\n{discussion_str}")
-        print(f"\nDiscussion round {self.discussionRound} completed:")
-        print("=" * 60)
+        
+        # Simplified discussion summary for console
+        print(f"\n💬 Discussion Round {self.discussionRound} ({len(round_comments)} speakers):")
+        print("─" * 80)
         for comment in round_comments:
             agent_name = self.agents[comment['agent_id']].name
-            print(f"\nCardinal {comment['agent_id']} - {agent_name}:")
-            print(f"{comment['message']}")
-        print("=" * 60)
+            # Show full message without truncation
+            message = comment['message']
+            print(f"\n🔸 {agent_name}:")
+            print(f"{message}")
+        print("─" * 80)
 
     def list_candidates_for_prompt(self, randomize: bool = True) -> str:
         indices = list(range(self.num_agents))

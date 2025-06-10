@@ -91,11 +91,13 @@ def main():
             
             # After all discussions, run voting
             winner_found = env.run_voting_round()
-            print(f"Election round {election_round} completed. Winner found: {winner_found}")
+            print(f"\n📊 Election Round {election_round} completed. Winner found: {'Yes' if winner_found else 'No'}\n")
 
         if winner_found:
-            print(f"Winner found after {election_round} election rounds: Cardinal {env.winner} - {env.agents[env.winner].name}")
+            print(f"✅ CONCLAVE COMPLETE!")
+            print(f"🎉 Winner: Cardinal {env.agents[env.winner].name} elected as Pope after {election_round} election rounds")
         else:
+            print(f"❌ CONCLAVE INCOMPLETE")
             print(f"No winner found after {max_election_rounds} election rounds. Simulation ended without papal election.")
     
     finally:
