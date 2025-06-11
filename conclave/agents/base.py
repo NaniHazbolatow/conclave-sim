@@ -208,8 +208,15 @@ class Agent:
         # Get current internal stance (generate if needed)
         internal_stance = self.get_internal_stance()
 
+        # Get current discussion participants information
+        current_discussion_participants = self.env.get_current_discussion_participants()
+        
+        # Get current scoreboard for visual context
+        current_scoreboard = self.env.get_current_scoreboard()
+
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_discussion_prompt(
+            current_scoreboard=current_scoreboard,
             agent_name=self.name,
             background=self.background,
             internal_stance=internal_stance,
@@ -218,6 +225,7 @@ class Agent:
             discussion_history=discussion_history,
             short_term_memory=short_term_memory,
             recent_speech_snippets=recent_speech_snippets,
+            current_discussion_participants=current_discussion_participants,
             discussion_round=self.env.discussionRound,
             voting_round=self.env.votingRound,
             discussion_min_words=self.config.get_discussion_min_words(),
@@ -333,10 +341,14 @@ class Agent:
         ballot_results_history = self.promptize_voting_results_history()
         discussion_history = self.env.get_discussion_history(self.agent_id)
         
+        # Get the last stance for continuity
+        last_stance = self.get_last_stance()
+        
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_internal_stance_prompt(
             agent_name=self.name,
             background=self.background,
+            last_stance=last_stance,
             candidates_list=self.env.list_candidates_for_prompt(randomize=False),
             personal_vote_history=personal_vote_history,
             ballot_results_history=ballot_results_history,
@@ -714,3 +726,20 @@ Start your response immediately with your stance (no introductory text):"""
             formatted_snippets.append(f"Round {speech['round']}: \"{speech['snippet']}\"")
         
         return " | ".join(formatted_snippets)
+    
+    def get_last_stance(self) -> str:
+        """
+        Get the agent's last stance from their stance history.
+        
+        Returns:
+            The agent's previous stance, or "None - this is your first stance" if no previous stance exists
+        """
+        if not self.stance_history:
+            return "None - this is your first stance."
+        
+        last_entry = self.stance_history[-1]
+        last_stance = last_entry.get("stance", "")
+        voting_round = last_entry.get("voting_round", "?")
+        discussion_round = last_entry.get("discussion_round", "?")
+        
+        return f"Previous stance (V{voting_round}.D{discussion_round}): {last_stance}"

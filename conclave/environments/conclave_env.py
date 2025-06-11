@@ -25,6 +25,8 @@ class ConclaveEnv:
         self.agent_discussion_participation = {}
         # Track which agents voted in each round
         self.voting_participation = {}
+        # Track which agents have already spoken in the current election round
+        self.agents_spoken_in_current_election = set()
         
         # Get configuration for simulation parameters
         self.config = get_config()
@@ -38,6 +40,11 @@ class ConclaveEnv:
     def freeze_agent_count(self):
         """Freeze the agent count to match the loaded roster. Call after loading all agents."""
         self.num_agents = len(self.agents)
+
+    def reset_discussion_speakers_for_new_election_round(self):
+        """Reset the set of agents who have spoken in the current election round."""
+        self.agents_spoken_in_current_election = set()
+        logger.info("Reset discussion speakers for new election round")
 
     def cast_vote(self, candidate_id: int, voter_id: int = None) -> None:
         with self.voting_lock:
@@ -200,44 +207,63 @@ class ConclaveEnv:
     def run_discussion_round(self, num_speakers: int = 5) -> None:
         """
         Run a discussion round where agents can speak about candidates or their own position.
+        Ensures that each cardinal speaks only once per election round across all discussion cycles.
 
         Args:
             num_speakers: Number of speakers to include in the discussion.
-                          If greater than total agents, all agents will participate.
+                          If greater than available agents, all available agents will participate.
         """
         self.discussionRound += 1
         round_comments = []
 
-        # Get all agent IDs
+        # Get all agent IDs that haven't spoken yet in this election round
         all_agent_ids = list(range(len(self.agents)))
+        available_agent_ids = [agent_id for agent_id in all_agent_ids 
+                              if agent_id not in self.agents_spoken_in_current_election]
+
+        # If no agents are available (all have spoken), reset and use all agents
+        if not available_agent_ids:
+            logger.warning(f"All agents have already spoken in this election round. "
+                          f"Resetting speakers to allow participation.")
+            available_agent_ids = all_agent_ids
+            self.agents_spoken_in_current_election.clear()
 
         # Check if we should randomize speaking order
         randomize_order = self.config.get_randomize_speaking_order()
         
         if randomize_order:
-            # Select speakers randomly
+            # Select speakers randomly from available agents
             logger.info(f"Using random selection for discussion round {self.discussionRound}")
-            # Randomly shuffle the IDs
-            random.shuffle(all_agent_ids)
+            # Randomly shuffle the available IDs
+            random.shuffle(available_agent_ids)
         else:
-            # Use sequential order (agent ID order)
+            # Use sequential order (agent ID order) from available agents
             logger.info(f"Using sequential order for discussion round {self.discussionRound}")
 
-        # Select the specified number of speakers
-        if num_speakers > self.num_agents:
-            selected_agent_ids = all_agent_ids
+        # Select the specified number of speakers from available agents
+        if num_speakers > len(available_agent_ids):
+            selected_agent_ids = available_agent_ids
+            logger.info(f"Requested {num_speakers} speakers but only {len(available_agent_ids)} available. "
+                       f"Using all available agents.")
         else:
-            selected_agent_ids = all_agent_ids[:num_speakers]
+            selected_agent_ids = available_agent_ids[:num_speakers]
+
+        # Mark these agents as having spoken in this election round
+        self.agents_spoken_in_current_election.update(selected_agent_ids)
+
+        # Store current discussion speakers for reference during the discussion
+        self._current_discussion_speakers = selected_agent_ids
 
         # Get the corresponding agent objects
         speakers = [self.agents[agent_id] for agent_id in selected_agent_ids]
 
-        # Log the random selection
+        # Log the selection
         selected_str = "\n".join([
             f"Cardinal {agent_id} - {self.agents[agent_id].name}"
             for agent_id in selected_agent_ids
         ])
-        logger.info(f"Randomly selected speakers for round {self.discussionRound}:\n{selected_str}")
+        logger.info(f"Selected speakers for discussion round {self.discussionRound}:\n{selected_str}")
+        logger.info(f"Agents already spoken in this election round: {sorted(self.agents_spoken_in_current_election)}")
 
         logger.info(f"Starting discussion round {self.discussionRound} with {len(speakers)} speakers")
 
@@ -434,3 +460,52 @@ class ConclaveEnv:
             return max(1, round(raw_threshold))
         else:
             return math.ceil(raw_threshold)
+    
+    def get_current_discussion_participants(self) -> str:
+        """
+        Get information about who is participating in the current discussion round.
+        
+        Returns:
+            Formatted string with current discussion participants
+        """
+        if not hasattr(self, '_current_discussion_speakers') or not self._current_discussion_speakers:
+            return "No current discussion participants."
+        
+        participant_names = []
+        for agent_id in sorted(self._current_discussion_speakers):
+            if agent_id < len(self.agents):
+                participant_names.append(f"Cardinal {self.agents[agent_id].name}")
+        
+        if len(participant_names) == 1:
+            return f"You are the only speaker in this discussion round."
+        else:
+            return f"Current discussion participants: {', '.join(participant_names)}"
+    
+    def get_current_scoreboard(self) -> str:
+        """
+        Generate a one-line scoreboard showing the top three candidates with their vote counts.
+        Makes stagnation visually obvious in discussions.
+        
+        Returns:
+            Formatted scoreboard string like "Top three: Smith=3, Jones=2, Brown=1"
+        """
+        if not self.votingHistory:
+            return "Top three: No votes cast yet"
+        
+        # Get the most recent voting results
+        latest_results = self.votingHistory[-1]
+        
+        if not latest_results:
+            return "Top three: No votes cast yet"
+        
+        # Sort by vote count (descending) and take top 3
+        sorted_results = sorted(latest_results.items(), key=lambda x: x[1], reverse=True)
+        top_three = sorted_results[:3]
+        
+        # Format as "Name=votes" pairs
+        scoreboard_parts = []
+        for candidate_id, vote_count in top_three:
+            candidate_name = self.agents[candidate_id].name.split()[-1]  # Use last name only for brevity
+            scoreboard_parts.append(f"{candidate_name}={vote_count}")
+        
+        return f"Top three: {', '.join(scoreboard_parts)}"

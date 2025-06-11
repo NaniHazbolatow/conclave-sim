@@ -102,16 +102,16 @@ simulation:
   performance_logging: true # Track timing and performance metrics
   
   # Cardinal selection
-  num_cardinals: 8          # Number of cardinals to include in simulation (from CSV head)
+  num_cardinals: 20          # Number of cardinals to include in simulation (from CSV head)
   
   # Discussion structure
-  max_speakers_per_round: 8     # Maximum cardinals who can speak per round
-  num_discussions: 1        # Number of complete discussion cycles to run per election round
+  max_speakers_per_round: 5     # Maximum cardinals who can speak per round
+  num_discussions: 4        # Number of complete discussion cycles to run per election round
   max_election_rounds: 5    # Maximum number of full election rounds before stopping (no winner required)
   randomize_speaking_order: true  # Whether to randomize the order of speakers in discussion rounds
   discussion_length:
-    min_words: 100          # Minimum word count for discussion contributions
-    max_words: 200          # Maximum word count for discussion contributions
+    min_words: 50          # Minimum word count for discussion contributions
+    max_words: 100          # Maximum word count for discussion contributions
   
   # Voting rules
   voting:

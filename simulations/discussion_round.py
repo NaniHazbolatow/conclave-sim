@@ -85,6 +85,9 @@ def main():
             election_round += 1
             logger.info(f"\n=== ELECTION ROUND {election_round} ===")
             
+            # Reset discussion speakers for the new election round
+            env.reset_discussion_speakers_for_new_election_round()
+            
             # Run the configured number of discussions
             for discussion_num in range(1, num_discussions + 1):
                 logger.info(f"\n--- Discussion Cycle {discussion_num} ---")
