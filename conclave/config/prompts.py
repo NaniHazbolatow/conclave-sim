@@ -78,246 +78,137 @@ class PromptManager:
             raise ValueError(f"Prompt template '{prompt_name}' not found")
         
         template = self.prompts[prompt_name]
-        
-        # Generate variables if we have an environment and agent
         variables = {}
+
+        # Generate agent-specific variables
         if self.variable_generator and agent_id is not None:
-            variables.update(self.variable_generator.generate_agent_variables(agent_id))
+            try:
+                agent_vars = self.variable_generator.generate_agent_variables(agent_id)
+                variables.update(agent_vars)
+            except Exception as e:
+                logger.warning(f"Error generating agent variables for agent {agent_id} for prompt '{prompt_name}': {e}")
+                # Fallback attempt will be handled by the main try/except block below if a KeyError occurs
+
+        # Generate group-specific variables (e.g., for discussion prompts)
+        if self.variable_generator and (prompt_name.startswith("discussion_") or prompt_name == "discussion"):
+            if self.env and hasattr(self.env, '_current_discussion_speakers'):
+                participant_ids = getattr(self.env, '_current_discussion_speakers', None)
+                if participant_ids: 
+                    try:
+                        group_vars = self.variable_generator.generate_group_variables(participant_ids=participant_ids)
+                        variables.update(group_vars)
+                    except Exception as e:
+                        logger.warning(f"Error generating group variables for prompt '{prompt_name}' with participants {participant_ids}: {e}")
+                else:
+                    logger.warning(f"'_current_discussion_speakers' is empty or None for prompt '{prompt_name}'. Cannot generate group variables.")
+            else:
+                logger.warning(f"Environment 'env' or attribute '_current_discussion_speakers' not available for prompt '{prompt_name}'. Cannot generate group variables.")
         
-        # Add extra variables
-        variables.update(extra_vars)
+        variables.update(extra_vars) # Allow extra_vars to override any generated variables
         
         try:
             return template.format(**variables)
         except KeyError as e:
-            logger.error(f"Missing variable {e} for prompt '{prompt_name}'")
-            logger.error(f"Available variables: {list(variables.keys())}")
-            raise
-    
-    def get_internal_persona_extractor_prompt(self, agent_name: str, biography: str) -> str:
-        """Get the internal persona extractor prompt."""
-        return self.get_prompt("internal_persona_extractor", 
-                             agent_name=agent_name, 
-                             biography=biography)
-    
-    def get_external_profile_generator_prompt(self, agent_name: str, persona_internal: str) -> str:
-        """Get the external profile generator prompt."""
-        return self.get_prompt("external_profile_generator",
-                             agent_name=agent_name,
-                             persona_internal=persona_internal)
-    
-    def get_discussion_candidate_prompt(self, agent_id: int, group_participants: list = None) -> str:
-        """Get the discussion prompt for a candidate."""
-        extra_vars = {}
-        if group_participants and self.variable_generator:
-            extra_vars.update(self.variable_generator.generate_group_variables(group_participants))
+            original_missing_key = str(e).strip("'\"") 
+            logger.error(f"Initial formatting failed. Missing variable '{original_missing_key}' for prompt '{prompt_name}'.")
+            logger.info(f"Variables available before fallback attempt: {list(variables.keys())}")
+
+            logger.info(f"Attempting to add fallback variables for prompt '{prompt_name}'.")
+            # Note: _add_basic_fallback_variables expects agent_id: int. If agent_id is None,
+            # f'Agent {agent_id}' in that method will become 'Agent None'.
+            # The type hint in _add_basic_fallback_variables should ideally be Optional[int].
+            self._add_basic_fallback_variables(variables, agent_id, prompt_name) # Modifies 'variables' in-place
+            
+            if original_missing_key not in variables:
+                logger.warning(f"Fallback variable for the initially missing key '{original_missing_key}' was NOT set by _add_basic_fallback_variables for prompt '{prompt_name}'.")
+            
+            try:
+                logger.info(f"Retrying formatting for prompt '{prompt_name}' with fallbacks included. Final variables for formatting: {list(variables.keys())}")
+                return template.format(**variables)
+            except KeyError as final_e:
+                final_missing_key = str(final_e).strip("'\"")
+                logger.error(f"Formatting failed even after fallback for prompt '{prompt_name}'. Missing variable '{final_missing_key}'.")
+                logger.error(f"Final available variables after fallback attempt: {list(variables.keys())}")
+                
+                # For debugging, log what fallbacks _add_basic_fallback_variables would have set
+                temp_fallback_check = {}
+                # Use a placeholder for agent_id if it's None, to satisfy type hint for debug check if necessary,
+                # though _add_basic_fallback_variables should ideally handle None.
+                check_agent_id_for_debug = agent_id if agent_id is not None else -1 # Using -1 as a dummy non-None ID
+                self._add_basic_fallback_variables(temp_fallback_check, check_agent_id_for_debug, prompt_name)
+                logger.error(f"Expected fallbacks that _add_basic_fallback_variables would set for '{prompt_name}' (debug check with agent_id {check_agent_id_for_debug}): {list(temp_fallback_check.keys())}")
+                raise final_e
+
+    def _get_prompt_by_role(self, base_prompt_name: str, agent_id: int = None, **kwargs) -> str:
+        """
+        Helper to get a prompt based on agent's role (candidate or elector).
         
-        return self.get_prompt("discussion_candidate", agent_id, **extra_vars)
-    
-    def get_discussion_elector_prompt(self, agent_id: int, group_participants: list = None) -> str:
-        """Get the discussion prompt for an elector."""
-        extra_vars = {}
-        if group_participants and self.variable_generator:
-            extra_vars.update(self.variable_generator.generate_group_variables(group_participants))
-        
-        return self.get_prompt("discussion_elector", agent_id, **extra_vars)
-    
-    def get_discussion_analyzer_prompt(self, round_id: int, group_transcript: str) -> str:
-        """Get the discussion analyzer prompt."""
-        return self.get_prompt("discussion_analyzer",
-                             round_id=round_id,
-                             group_transcript=group_transcript)
-    
-    def get_discussion_reflection_prompt(self, agent_id: int, group_summary: str, agent_last_utterance: str) -> str:
-        """Get the discussion reflection prompt."""
-        return self.get_prompt("discussion_reflection", agent_id,
-                             group_summary=group_summary,
-                             agent_last_utterance=agent_last_utterance)
-    
-    def get_stance_prompt(self, agent_id: int, reflection_digest: str = None) -> str:
-        """Get the stance generation prompt."""
-        extra_vars = {}
-        if reflection_digest:
-            extra_vars['reflection_digest'] = reflection_digest
-        
-        return self.get_prompt("stance", agent_id, **extra_vars)
-    
-    def get_voting_candidate_prompt(self, agent_id: int) -> str:
-        """Get the voting prompt for a candidate."""
-        return self.get_prompt("voting_candidate", agent_id)
-    
-    def get_voting_elector_prompt(self, agent_id: int) -> str:
-        """Get the voting prompt for an elector."""
-        return self.get_prompt("voting_elector", agent_id)
-    
+        Args:
+            base_prompt_name: The base name for the prompt (e.g., "voting", "discussion").
+                              The actual template name will be e.g. "voting_candidate" or "voting_elector".
+            agent_id: ID of the agent requesting the prompt.
+            **kwargs: Variables to substitute in the prompt template.
+            
+        Returns:
+            Formatted prompt string.
+        """
+        template_name = f"{base_prompt_name}_elector"  # Default to elector
+        if agent_id is not None and self.env is not None:
+            # Check if the agent is a candidate
+            # Assuming env has a method like get_candidates_list() or is_candidate(agent_id)
+            try:
+                # Adapt this check to your environment's actual method for identifying candidates
+                if hasattr(self.env, 'get_candidates_list') and agent_id in self.env.get_candidates_list():
+                    template_name = f"{base_prompt_name}_candidate"
+                elif hasattr(self.env, 'is_candidate') and self.env.is_candidate(agent_id):
+                     template_name = f"{base_prompt_name}_candidate"
+            except Exception as e:
+                logger.warning(f"Could not determine agent role for agent_id {agent_id}: {e}. Defaulting to elector prompt.")
+
+        return self.get_prompt(template_name, agent_id, **kwargs)
+
     def get_voting_prompt(self, agent_id=None, **kwargs) -> str:
-        """
-        Get the voting prompt with variable substitution.
-        Uses the enhanced voting prompts (voting_candidate/voting_elector).
-        
-        Args:
-            agent_id: ID of the agent requesting the prompt
-            **kwargs: Variables to substitute in the prompt template
-            
-        Returns:
-            Formatted voting prompt
-        """
-        # Check if agent is a candidate by looking at available candidates
-        if agent_id is not None and self.env is not None:
-            # Check if this agent is in the candidates list
-            candidates = self.env.get_candidates_list()
-            if agent_id in candidates:
-                # Use candidate voting prompt
-                template = self.prompts.get("voting_candidate", "")
-            else:
-                # Use elector voting prompt  
-                template = self.prompts.get("voting_elector", "")
-        else:
-            # Fallback - try voting_elector as default
-            template = self.prompts.get("voting_elector", "")
-            
-        # If we have a variable generator, use it to populate template variables
-        if self.variable_generator and agent_id is not None:
-            try:
-                variables = self.variable_generator.generate_agent_variables(agent_id)
-                # Merge with provided kwargs (kwargs take precedence)
-                variables.update(kwargs)
-                return template.format(**variables)
-            except Exception as e:
-                logger.warning(f"Error generating variables for agent {agent_id}: {e}")
-                # Fall back to basic variables without complex ones
-                basic_vars = {k: v for k, v in kwargs.items()}
-                # Add missing basic variables for voting prompts
-                if self.env:
-                    basic_vars.setdefault('voting_round', self.env.votingRound)
-                    basic_vars.setdefault('agent_name', f'Agent {agent_id}')
-                    basic_vars.setdefault('persona_internal', 'Cardinal profile')
-                    basic_vars.setdefault('stance_digest', 'Initial stance')
-                    basic_vars.setdefault('compact_scoreboard', 'No voting history yet')
-                    basic_vars.setdefault('threshold', '77')
-                    basic_vars.setdefault('visible_candidates_ids', '[0, 1, 2, 3, 4]')
-                return template.format(**basic_vars)
-        else:
-            # Ensure basic variables are present
-            if self.env:
-                kwargs.setdefault('voting_round', self.env.votingRound)
-                kwargs.setdefault('threshold', '77')
-            return template.format(**kwargs)
+        """Get the voting prompt, dynamically selecting candidate/elector version."""
+        return self._get_prompt_by_role("voting", agent_id, **kwargs)
     
-
     def get_discussion_prompt(self, agent_id=None, **kwargs) -> str:
-        """
-        Get the discussion prompt with variable substitution.
-        Uses the enhanced discussion prompts (discussion_candidate/discussion_elector).
-        
-        Args:
-            agent_id: ID of the agent requesting the prompt
-            **kwargs: Variables to substitute in the prompt template
-            
-        Returns:
-            Formatted discussion prompt
-        """
-        # Check if agent is a candidate by looking at available candidates
-        if agent_id is not None and self.env is not None:
-            # Check if this agent is in the candidates list
-            candidates = self.env.get_candidates_list()
-            if agent_id in candidates:
-                # Use candidate prompt
-                template = self.prompts.get("discussion_candidate", "")
-            else:
-                # Use elector prompt  
-                template = self.prompts.get("discussion_elector", "")
-        else:
-            # Fallback - try discussion_elector as default
-            template = self.prompts.get("discussion_elector", "")
-            
-        # If we have a variable generator, use it to populate template variables
-        if self.variable_generator and agent_id is not None:
-            try:
-                variables = self.variable_generator.generate_agent_variables(agent_id)
-                # Merge with provided kwargs (kwargs take precedence)
-                variables.update(kwargs)
-                return template.format(**variables)
-            except Exception as e:
-                logger.warning(f"Error generating variables for agent {agent_id}: {e}")
-                # Fall back to basic variables without complex ones
-                basic_vars = {k: v for k, v in kwargs.items()}
-                # Add missing basic variables for discussion prompts
-                if self.env:
-                    basic_vars.setdefault('discussion_round', self.env.discussionRound)
-                    basic_vars.setdefault('voting_round', self.env.votingRound)
-                    basic_vars.setdefault('agent_name', f'Agent {agent_id}')
-                    basic_vars.setdefault('persona_internal', 'Cardinal profile')
-                    basic_vars.setdefault('stance_digest', 'Initial stance')
-                    basic_vars.setdefault('compact_scoreboard', 'No voting history yet')
-                    basic_vars.setdefault('threshold', '77')
-                    basic_vars.setdefault('group_profiles', 'Fellow cardinals participating in discussion')
-                    # Generate proper visible candidates even in fallback
-                    if 'visible_candidates' not in basic_vars:
-                        try:
-                            from .prompt_variables import PromptVariableGenerator
-                            temp_gen = PromptVariableGenerator(self.env)
-                            basic_vars['visible_candidates'] = temp_gen.generate_visible_candidates()
-                        except:
-                            basic_vars['visible_candidates'] = 'All cardinals are potential candidates'
-                return template.format(**basic_vars)
-        else:
-            # Ensure basic variables are present
-            if self.env:
-                kwargs.setdefault('discussion_round', self.env.discussionRound)
-                kwargs.setdefault('voting_round', self.env.votingRound)
-            return template.format(**kwargs)
+        """Get the discussion prompt, dynamically selecting candidate/elector version."""
+        return self._get_prompt_by_role("discussion", agent_id, **kwargs)
     
-
     def get_internal_stance_prompt(self, agent_id=None, **kwargs) -> str:
-        """
-        Get the internal stance prompt with variable substitution.
-        Uses the enhanced stance prompt.
+        """Get the internal stance prompt."""
+        return self.get_prompt("stance", agent_id, **kwargs)
+    
+    def _add_basic_fallback_variables(self, variables: dict, agent_id: int, template_name: str):
+        """Add basic fallback variables when variable generation fails."""
+        # Common variables for all templates
+        variables.setdefault('voting_round', self.env.votingRound)
+        variables.setdefault('discussion_round', self.env.discussionRound)
+        variables.setdefault('agent_name', f'Agent {agent_id}')
+        variables.setdefault('threshold', '77')
         
-        Args:
-            agent_id: ID of the agent requesting the prompt
-            **kwargs: Variables to substitute in the prompt template
+        # Template-specific variables
+        if template_name.startswith('voting_'):
+            variables.setdefault('persona_internal', 'Cardinal profile')
+            variables.setdefault('stance_digest', 'Initial stance')
+            variables.setdefault('compact_scoreboard', 'No voting history yet')
+            variables.setdefault('visible_candidates_ids', '[0, 1, 2, 3, 4]')
+            variables.setdefault('candidate_id_mapping', 'Cardinal 0: Agent 0\nCardinal 1: Agent 1')
             
-        Returns:
-            Formatted internal stance prompt
-        """
-        template = self.prompts.get("stance", "")
-        
-        # If we have a variable generator, use it to populate template variables
-        if self.variable_generator and agent_id is not None:
-            try:
-                variables = self.variable_generator.generate_agent_variables(agent_id)
-                # Merge with provided kwargs (kwargs take precedence)
-                variables.update(kwargs)
-                return template.format(**variables)
-            except Exception as e:
-                logger.warning(f"Error generating variables for agent {agent_id}: {e}")
-                # Fall back to basic variables without complex ones
-                basic_vars = {k: v for k, v in kwargs.items()}
-                # Add missing basic variables
-                if self.env:
-                    basic_vars.setdefault('voting_round', self.env.votingRound)
-                    basic_vars.setdefault('threshold', '77')  # Default threshold
-                    basic_vars.setdefault('agent_name', f'Agent {agent_id}')
-                    basic_vars.setdefault('role_tag', 'ELECTOR')
-                    basic_vars.setdefault('persona_internal', 'Cardinal profile')
-                    basic_vars.setdefault('compact_scoreboard', 'No voting history yet')
-                    basic_vars.setdefault('reflection_digest', 'Initial stance formation')
-                    # Generate proper visible candidates even in fallback
-                    if 'visible_candidates' not in basic_vars:
-                        try:
-                            from .prompt_variables import PromptVariableGenerator
-                            temp_gen = PromptVariableGenerator(self.env)
-                            basic_vars['visible_candidates'] = temp_gen.generate_visible_candidates()
-                        except:
-                            basic_vars['visible_candidates'] = 'All cardinals are candidates'
-                return template.format(**basic_vars)
-        else:
-            # Ensure basic variables are present
-            if self.env:
-                kwargs.setdefault('voting_round', self.env.votingRound)
-                kwargs.setdefault('threshold', '77')
-            return template.format(**kwargs)
+        elif template_name.startswith('discussion_'):
+            variables.setdefault('persona_internal', 'Cardinal profile')
+            variables.setdefault('stance_digest', 'Initial stance')
+            variables.setdefault('compact_scoreboard', 'No voting history yet')
+            variables.setdefault('group_profiles', 'Fellow cardinals participating in discussion')
+            variables.setdefault('visible_candidates', 'All cardinals are potential candidates')
+            
+        elif template_name == 'stance':
+            variables.setdefault('role_tag', 'ELECTOR')
+            variables.setdefault('persona_internal', 'Cardinal profile')
+            variables.setdefault('compact_scoreboard', 'No voting history yet')
+            variables.setdefault('reflection_digest', 'Initial stance formation')
+            variables.setdefault('visible_candidates', 'All cardinals are candidates')
+            variables.setdefault('visible_candidates_ids', '[0, 1, 2, 3, 4]')
     
 
     def reload_prompts(self):

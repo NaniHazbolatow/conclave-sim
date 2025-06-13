@@ -84,19 +84,18 @@ class Agent:
 
     def cast_vote(self) -> None:
         """Cast a vote using the new variable-based voting prompts."""
-        # Get role information for testing groups and set role_tag
-        if self.env.testing_groups_enabled:
-            self.role_tag = "CANDIDATE" if self.env.is_candidate(self.agent_id) else "ELECTOR"
+        # Determine role tag for the agent for this voting round
+        if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
+            self.role_tag = "CANDIDATE"
         else:
-            self.role_tag = "ELECTOR"  # In normal mode, all can vote, but we treat as electors
+            self.role_tag = "ELECTOR" 
         
-        # Use the updated prompt manager method with agent_id
+        # Get the appropriate voting prompt based on agent_id and determined role
+        # The PromptManager will handle selecting voting_candidate or voting_elector
         voting_prompt = self.prompt_manager.get_voting_prompt(agent_id=self.agent_id)
         
-        # Debug log the prompt
-        self.logger.debug(f"Voting prompt for {self.name}: {voting_prompt}")
+        self.logger.debug(f"Voting prompt for {self.name} (Role: {self.role_tag}): {voting_prompt}")
         
-        # Define vote tool that expects Cardinal ID
         tools = [
             {
                 "type": "function",
@@ -118,11 +117,9 @@ class Agent:
         ]
         
         try:
-            # Use robust tool calling
             messages = [{"role": "user", "content": voting_prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="cast_vote")
             
-            # Debug: Log the full tool calling result
             self.logger.debug(f"=== VOTE TOOL CALLING RESULT FOR {self.name} ===")
             self.logger.debug(f"Success: {result.success}")
             self.logger.debug(f"Arguments: {result.arguments}")
@@ -132,107 +129,100 @@ class Agent:
             if result.success and result.arguments:
                 cardinal_id = result.arguments.get("vote_cardinal_id")
 
-                # Validate and convert Cardinal ID to agent ID
                 if cardinal_id is not None:
                     try:
                         cardinal_id = int(cardinal_id)
+                        # Convert cardinal_id to agent_id (internal)
+                        # This assumes a mapping or direct use if cardinal_id is the agent_id
+                        # For now, let's assume cardinal_id from prompt IS the agent_id for simplicity
+                        # If there's a separate mapping, it needs to be resolved here.
+                        # Example: agent_to_vote_for_id = self.env.get_agent_id_from_cardinal_id(cardinal_id)
                         
-                        # Find the agent with this cardinal_id
-                        agent_id = None
-                        for i, agent in enumerate(self.env.agents):
-                            if getattr(agent, 'cardinal_id', i) == cardinal_id:
-                                agent_id = i
+                        agent_to_vote_for_id = None
+                        for i, agent_in_env in enumerate(self.env.agents):
+                            if getattr(agent_in_env, 'cardinal_id', i) == cardinal_id:
+                                agent_to_vote_for_id = i
                                 break
                         
-                        if agent_id is None:
+                        if agent_to_vote_for_id is None:
                             available_cardinals = [getattr(agent, 'cardinal_id', i) for i, agent in enumerate(self.env.agents)]
                             raise ValueError(f"Cardinal ID {cardinal_id} not found. Available: {available_cardinals}")
+
+                        if not self.env.is_valid_vote_candidate(agent_to_vote_for_id):
+                            # Provide more context on available candidates if vote is invalid
+                            # This requires a method in env to list votable candidates' cardinal IDs
+                            # For now, just log the error
+                            raise ValueError(f"Cardinal {cardinal_id} (Agent ID: {agent_to_vote_for_id}) is not eligible to receive votes.")
+
+                        self.logger.debug(f"Valid Cardinal ID {cardinal_id} (Agent {agent_to_vote_for_id}) selected by {self.name}")
                         
-                        # Check if candidate is valid for voting in current mode
-                        if not self.env.is_valid_vote_candidate(agent_id):
-                            available_candidates = [getattr(self.env.agents[cid], 'cardinal_id', cid) for cid in self.env.get_candidates_list()]
-                            raise ValueError(f"Cardinal {cardinal_id} is not eligible to receive votes. Available candidates: {available_candidates}")
-                        
-                        self.logger.debug(f"Valid Cardinal ID {cardinal_id} (Agent {agent_id}) selected")
-                        
-                        # Save vote reasoning (simplified since new prompts don't include explanation)
                         self.vote_history.append({
-                            "vote": agent_id,
-                            "reasoning": f"Voted for Cardinal {cardinal_id} based on internal stance and voting prompt analysis"
+                            "vote": agent_to_vote_for_id, # Store internal agent_id
+                            "reasoning": f"Voted for Cardinal {cardinal_id} based on internal stance and voting prompt analysis."
                         })
 
-                        # Cast the vote using agent_id
-                        self.env.cast_vote(agent_id, self.agent_id)
-                        voted_candidate_name = self.env.agents[agent_id].name
+                        self.env.cast_vote(agent_to_vote_for_id, self.agent_id)
+                        voted_candidate_name = self.env.agents[agent_to_vote_for_id].name
                         self.logger.info(f"{self.name} voted for Cardinal {cardinal_id} - {voted_candidate_name}")
                         return
                         
                     except (ValueError, TypeError) as e:
-                        self.logger.error(f"Invalid Cardinal ID '{cardinal_id}': {e}")
-                        raise ValueError(f"Invalid Cardinal ID: {cardinal_id}")
+                        self.logger.error(f"Invalid Cardinal ID '{cardinal_id}' provided by {self.name}: {e}")
+                        # Consider not re-raising if a fallback (e.g., abstaining) is desired
+                        raise ValueError(f"Invalid Cardinal ID: {cardinal_id}") 
                 else:
-                    self.logger.error("No Cardinal ID provided in vote")
-                    raise ValueError("No Cardinal ID provided")
+                    self.logger.error(f"{self.name} failed to provide a Cardinal ID in vote.")
+                    raise ValueError("No Cardinal ID provided in vote by agent.")
             else:
-                self.logger.error(f"Tool calling failed: {result.error}")
-                raise ValueError(f"Tool calling failed: {result.error}")
+                error_msg = result.error if result.error else "Unknown tool calling failure."
+                self.logger.error(f"Tool calling failed for {self.name} during voting: {error_msg}")
+                raise ValueError(f"Tool calling failed: {error_msg}")
 
         except Exception as e:
-            # Log the error and re-raise to fail hard
-            self.logger.error(f"Error in {self.name} voting: {e}")
-            self.logger.debug(f"Voting failed for {self.name}", exc_info=True)
-            raise  # Re-raise the exception to fail hard
-
-
+            self.logger.error(f"Error in {self.name} voting process: {e}", exc_info=True)
+            # Re-raise to ensure simulation handles critical failures
+            raise
 
     def discuss(self) -> Optional[Dict]:
         """
-        Generate a discussion contribution about the conclave proceedings.
-
-        Returns:
-            Dict with agent_id and message if successful, None otherwise
+        Generate a discussion contribution.
+        Variables are now primarily sourced via PromptVariableGenerator.
         """
-        personal_vote_history = self.promptize_vote_history()
-        ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history(self.agent_id)
-        short_term_memory = self.get_short_term_memory()
-        recent_speech_snippets = self.get_recent_speech_snippets()
-        
-        # Get current internal stance (generate if needed)
-        internal_stance = self.get_internal_stance()
+        # Determine role tag for the agent for this discussion round
+        if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
+            self.role_tag = "CANDIDATE"
+        else:
+            self.role_tag = "ELECTOR"
 
-        # Get current discussion participants information
-        current_discussion_participants = self.env.get_current_discussion_participants()
-        
-        # Get current scoreboard for visual context
-        current_scoreboard = self.env.get_current_scoreboard()
-        
-        # Get role information for testing groups
-        role_description = self.env.get_role_description(self.agent_id)
-        candidates_description = self.env.get_candidates_description()
+        # Most variables are now automatically handled by PromptManager and PromptVariableGenerator
+        # We only need to pass agent_id and any specific non-standard variables if required.
+        # Standard variables like agent_name, background, internal_stance, etc.,
+        # are fetched by PromptVariableGenerator based on agent_id.
 
-        # Use prompt manager to get formatted prompt
+        # Example of passing additional, non-standard variables if needed:
+        # extra_discussion_vars = {
+        #     'custom_variable_for_discussion': "some_value"
+        # }
+        # prompt = self.prompt_manager.get_discussion_prompt(agent_id=self.agent_id, **extra_discussion_vars)
+
         prompt = self.prompt_manager.get_discussion_prompt(
             agent_id=self.agent_id,
-            current_scoreboard=current_scoreboard,
-            agent_name=self.name,
-            background=self.background,
-            internal_stance=internal_stance,
-            personal_vote_history=personal_vote_history,
-            ballot_results_history=ballot_results_history,
-            discussion_history=discussion_history,
-            short_term_memory=short_term_memory,
-            recent_speech_snippets=recent_speech_snippets,
-            current_discussion_participants=current_discussion_participants,
-            discussion_round=self.env.discussionRound,
-            voting_round=self.env.votingRound,
+            # Pass any variables not covered by PromptVariableGenerator or if overriding is needed
+            # For example, if these are dynamically calculated here and not part of standard agent vars:
+            # discussion_min_words=self.config.get_discussion_min_words(), 
+            # discussion_max_words=self.config.get_discussion_max_words()
+            # However, if these are fixed or derivable by PromptVariableGenerator, they can be removed from here.
+            # For now, assuming they might be dynamic or specific to this call context:
             discussion_min_words=self.config.get_discussion_min_words(),
             discussion_max_words=self.config.get_discussion_max_words(),
-            role_description=role_description,
-            candidates_description=candidates_description
+            # The following are likely covered by PromptVariableGenerator if defined in prompts.yaml:
+            # current_scoreboard, personal_vote_history, ballot_results_history, 
+            # discussion_history, short_term_memory, recent_speech_snippets, 
+            # current_discussion_participants, role_description, candidates_description
         )
 
-        # Define speak tool
+        self.logger.debug(f"Discussion prompt for {self.name} (Role: {self.role_tag}):\n{prompt}")
+
         min_words = self.config.get_discussion_min_words()
         max_words = self.config.get_discussion_max_words()
         tools = [
@@ -256,184 +246,122 @@ class Agent:
         ]
 
         try:
-            # Use robust tool calling
+            # The 'print(prompt)' can be removed or kept for debugging as needed
+            # print(prompt) 
             messages = [{"role": "user", "content": prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="speak_message")
             
             if result.success and result.arguments:
                 message = result.arguments.get("message", "")
+                if not message.strip():
+                    self.logger.warning(f"{self.name} ({self.agent_id}) provided an empty message.")
+                    # Optionally return a default message or handle as an error
+                    message = "(Agent provided no message)"
 
-                # Log the discussion contribution
                 self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
-                # Don't print individual speaking to console - it will be shown in the summary
-
-                # Return the discussion contribution
-                return {
-                    "agent_id": self.agent_id,
-                    "message": message
-                }
+                return {"agent_id": self.agent_id, "message": message}
             else:
-                self.logger.warning(f"Discussion tool calling failed: {result.error}")
-                return {
-                    "agent_id": self.agent_id,
-                    "message": f"Tool calling failed: {result.error}"
-                }
+                error_msg = result.error if result.error else "Unknown tool calling failure."
+                self.logger.warning(f"Discussion tool calling failed for {self.name}: {error_msg}")
+                # Return a message indicating failure, useful for the environment to track
+                return {"agent_id": self.agent_id, "message": f"(Tool calling failed: {error_msg})"}
 
         except Exception as e:
-            # Log the error and return None if there's a problem
-            self.logger.error(f"Error in LlmAgent {self.agent_id} discussion: {e}")
-            return None
-
-    def promptize_vote_history(self) -> str:
-        if self.vote_history:
-            vote_history_entries = []
-            for i, vote in enumerate(self.vote_history):
-                try:
-                    # Ensure vote is a dictionary and has the expected keys
-                    if isinstance(vote, dict) and 'vote' in vote and 'reasoning' in vote:
-                        vote_idx = vote['vote']
-                        if isinstance(vote_idx, int) and 0 <= vote_idx < len(self.env.agents):
-                            candidate_name = self.env.agents[vote_idx].name
-                            reasoning = vote['reasoning']
-                            vote_history_entries.append(f"In round {i+1}, you voted for {candidate_name} for the following reason:\n{reasoning}")
-                        else:
-                            vote_history_entries.append(f"In round {i+1}, you cast an invalid vote: {vote_idx}")
-                    else:
-                        vote_history_entries.append(f"In round {i+1}, vote data was malformed: {vote}")
-                except Exception as e:
-                    logger.error(f"Error processing vote history entry {i}: {vote}, error: {e}")
-                    vote_history_entries.append(f"In round {i+1}, error processing vote")
-            
-            vote_history_str = "\n".join(vote_history_entries)
-            return f"Your vote history:\n{vote_history_str}\n"
-        else:
-            return ""
-
-    def promptize_voting_results_history(self) -> str:
-        def promptize_voting_results(results: Dict[str, int]) -> str:
-            voting_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
-            if results:
-                # Map agent indices to Cardinal_ID for display
-                voting_results_str = "\n".join([
-                    f"Cardinal {getattr(self.env.agents[i], 'cardinal_id', i)} - {self.env.agents[i].name}: {votes}" 
-                    for i, votes in voting_results
-                ])
-                return f"\n{voting_results_str}\n"
-            else:
-                return ""
-
-        if self.env.votingHistory:
-            voting_results_history_str = "\n".join([f"Round {i+1}: {promptize_voting_results(result)}" for i,result in enumerate(self.env.votingHistory)])
-            return f"Previous ballot results:\n{voting_results_history_str}"
-        else:
-            return ""
+            self.logger.error(f"Error in Agent {self.name} ({self.agent_id}) discussion: {e}", exc_info=True)
+            # Return None or a dict with error to allow simulation to continue if desired
+            return {"agent_id": self.agent_id, "message": f"(Discussion error: {e})"}
 
     def generate_internal_stance(self) -> str:
         """
-        Generate an internal stance based on the agent's background, discussions, and voting history.
-        
-        Returns:
-            The generated internal stance as plain text
+        Generate an internal stance. Variables are now primarily sourced via PromptVariableGenerator.
         """
-        import datetime
-        
-        personal_vote_history = self.promptize_vote_history()
-        ballot_results_history = self.promptize_voting_results_history()
-        discussion_history = self.env.get_discussion_history(self.agent_id)
-        
-        # Get the last stance for continuity
-        last_stance = self.get_last_stance()
-        
-        # Get valid candidates list for stance generation
-        valid_candidates_list = self.env.get_valid_candidates_for_stance()
-        
-        # Use prompt manager to get formatted prompt
+        import datetime # Keep for timestamping
+
+        # Determine role tag for the agent for stance generation
+        if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
+            self.role_tag = "CANDIDATE"
+        else:
+            self.role_tag = "ELECTOR"
+
+        # Variables like personal_vote_history, ballot_results_history, discussion_history,
+        # last_stance, valid_candidates_list, candidates_list are now expected to be handled
+        # by PromptVariableGenerator if they are defined in the 'stance' prompt in prompts.yaml.
+        # The agent_id is passed, and PromptManager + PromptVariableGenerator will fetch them.
+
         prompt = self.prompt_manager.get_internal_stance_prompt(
-            agent_id=self.agent_id,
-            agent_name=self.name,
-            background=self.background,
-            last_stance=last_stance,
-            valid_candidates_list=valid_candidates_list,
-            candidates_list=self.env.list_candidates_for_prompt(randomize=False),
-            personal_vote_history=personal_vote_history,
-            ballot_results_history=ballot_results_history,
-            discussion_history=discussion_history,
-            voting_round=self.env.votingRound,
-            discussion_round=self.env.discussionRound
+            agent_id=self.agent_id
+            # Add any non-standard variables here if needed, e.g.:
+            # my_custom_stance_variable="custom_value"
         )
         
-        try:
-            # Define stance generation tool with strict word limit
-            tools = [
-                {
-                    "type": "function", 
-                    "function": {
-                        "name": "generate_stance",
-                        "description": "Generate a concise internal stance on the papal election",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "stance": {
-                                    "type": "string",
-                                    "description": "Your internal stance (75-125 words ONLY). Must be direct, concrete, and avoid diplomatic language. Focus on specific positions and candidate preferences."
-                                }
-                            },
-                            "required": ["stance"]
-                        }
+        self.logger.debug(f"Internal stance prompt for {self.name}:\n{prompt}")
+
+        tools = [
+            {
+                "type": "function", 
+                "function": {
+                    "name": "generate_stance",
+                    "description": "Generate a concise internal stance on the papal election",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "stance": {
+                                "type": "string",
+                                "description": "Your internal stance (75-125 words ONLY). Must be direct, concrete, and avoid diplomatic language. Focus on specific positions and candidate preferences."
+                            }
+                        },
+                        "required": ["stance"]
                     }
                 }
-            ]
+            }
+        ]
             
-            # Generate stance using tool calling
+        try:
             messages = [{"role": "user", "content": prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="generate_stance")
             
             if result.success and result.arguments:
-                stance = result.arguments.get("stance", "")
+                stance = result.arguments.get("stance", "").strip()
                 
-                # Validate word count (strict enforcement)
+                if not stance:
+                    self.logger.warning(f"{self.name} generated an empty stance. Attempting fallback.")
+                    return self._generate_stance_fallback(prompt) # Pass original prompt to fallback
+
                 word_count = len(stance.split())
-                if word_count > 150:
-                    self.logger.warning(f"Stance too long ({word_count} words), truncating to 125 words...")
-                    words = stance.split()[:125]
-                    stance = " ".join(words)
-                elif word_count < 50:
-                    self.logger.warning(f"Stance too short ({word_count} words). This may affect embedding quality.")
+                if word_count > 150: # Max length check
+                    self.logger.warning(f"Stance from {self.name} too long ({word_count} words), truncating to 125 words...")
+                    stance = " ".join(stance.split()[:125])
+                elif word_count < 50: # Min length warning
+                    self.logger.warning(f"Stance from {self.name} too short ({word_count} words). This may affect embedding quality.")
                 
-                # Update internal state
                 timestamp = datetime.datetime.now()
                 self.internal_stance = stance
                 self.last_stance_update = timestamp
-                
-                # Add to stance history
-                stance_entry = {
-                    "timestamp": timestamp,
-                    "stance": stance,
-                    "voting_round": self.env.votingRound,
-                    "discussion_round": self.env.discussionRound
-                }
-                self.stance_history.append(stance_entry)
-                
+                self.stance_history.append({
+                    "timestamp": timestamp, "stance": stance,
+                    "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
+                })
+                self.logger.info(f"{self.name} generated new stance (V{self.env.votingRound}.D{self.env.discussionRound}): '{stance[:100]}...'")
                 return stance
             else:
-                self.logger.warning(f"Tool calling failed for stance generation: {result.error}")
-                self.logger.info("Attempting fallback direct prompting for stance generation...")
-                
-                # Fallback: Use direct prompting without tool calling
-                return self._generate_stance_fallback(prompt)
+                error_msg = result.error if result.error else "Unknown tool calling failure."
+                self.logger.warning(f"Tool calling failed for stance generation for {self.name}: {error_msg}. Attempting fallback.")
+                return self._generate_stance_fallback(prompt) # Pass original prompt to fallback
             
         except Exception as e:
-            self.logger.error(f"Error generating internal stance for {self.name}: {e}")
-            self.logger.info("Attempting fallback direct prompting for stance generation...")
-            return self._generate_stance_fallback(prompt)
+            self.logger.error(f"Error generating internal stance for {self.name}: {e}", exc_info=True)
+            self.logger.info(f"Attempting fallback direct prompting for stance generation for {self.name}...")
+            return self._generate_stance_fallback(prompt) # Pass original prompt to fallback
     
     def _generate_stance_fallback(self, original_prompt: str) -> str:
-        """Fallback method for stance generation when tool calling fails."""
+        """Fallback method for stance generation when tool calling fails or returns empty."""
         try:
-            # Create a simple prompt that asks for direct text output
+            # Ensure datetime is imported if not already at the top level of the class/method
+            import datetime
+
             fallback_prompt = f"""{original_prompt}
 
-RESPOND WITH YOUR INTERNAL STANCE DIRECTLY (NO JSON):
+RESPOND WITH YOUR INTERNAL STANCE DIRECTLY (NO JSON OR TOOL FORMATTING):
 Write exactly 75-125 words covering:
 - Your preferred candidate and why
 - What the Church should focus on
@@ -444,185 +372,130 @@ Write exactly 75-125 words covering:
 Start your response immediately with your stance (no introductory text):"""
 
             messages = [{"role": "user", "content": fallback_prompt}]
-            response = self.llm_client.generate(messages)
+            response_content = self.llm_client.generate(messages) # Assuming generate returns the string content
             
-            if response and len(response.strip()) > 20:
-                # Clean up the response
-                stance = response.strip()
+            if response_content and len(response_content.strip()) > 20:
+                stance = response_content.strip()
+                stance = re.sub(r'^["\'{{\[\]}}]+|["\'{{\[\]}}]+$', '', stance) # Basic cleaning
+                stance = re.sub(r'\n+', ' ', stance).strip() # Normalize newlines and whitespace
+                stance = ' '.join(stance.split()) # Ensure single spaces
                 
-                # Remove any JSON artifacts or formatting
-                stance = re.sub(r'^["\'{}\[\]]+|["\'{}\[\]]+$', '', stance)
-                stance = re.sub(r'\n+', ' ', stance)  # Replace newlines with spaces
-                stance = ' '.join(stance.split())  # Normalize whitespace
-                
-                # Validate word count
                 word_count = len(stance.split())
                 if word_count > 150:
-                    words = stance.split()[:125]
-                    stance = " ".join(words)
+                    stance = " ".join(stance.split()[:125])
                 
-                if word_count >= 30:  # Minimum acceptable length
-                    # Update internal state
-                    import datetime
+                if word_count >= 30:  # Minimum acceptable length for a fallback
                     timestamp = datetime.datetime.now()
                     self.internal_stance = stance
                     self.last_stance_update = timestamp
-                    
-                    # Add to stance history
-                    stance_entry = {
-                        "timestamp": timestamp,
-                        "stance": stance,
-                        "voting_round": self.env.votingRound,
-                        "discussion_round": self.env.discussionRound
-                    }
-                    self.stance_history.append(stance_entry)
-                    
-                    self.logger.info(f"{self.name} generated fallback stance (V{self.env.votingRound}.D{self.env.discussionRound})")
-                    self.logger.info(f"=== FALLBACK STANCE: {self.name} ===")
-                    self.logger.info(f"Word count: {len(stance.split())}")
-                    self.logger.info(f"Stance Content:")
-                    self.logger.info(stance)
-                    self.logger.info(f"=== END FALLBACK STANCE: {self.name} ===")
-                    
+                    self.stance_history.append({
+                        "timestamp": timestamp, "stance": stance,
+                        "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
+                    })
+                    self.logger.info(f"{self.name} generated FALLBACK stance (V{self.env.votingRound}.D{self.env.discussionRound}), {word_count} words: '{stance[:100]}...'")
                     return stance
                 else:
-                    self.logger.warning(f"Fallback stance too short ({word_count} words)")
+                    self.logger.warning(f"Fallback stance for {self.name} too short ({word_count} words) after cleaning.")
                     return ""
             else:
-                self.logger.error("Fallback stance generation failed - empty response")
+                self.logger.error(f"Fallback stance generation for {self.name} failed - empty or too short response from LLM.")
                 return ""
                 
         except Exception as e:
-            self.logger.error(f"Fallback stance generation failed for {self.name}: {e}")
+            self.logger.error(f"Fallback stance generation for {self.name} failed with exception: {e}", exc_info=True)
             return ""
     
     def get_internal_stance(self) -> str:
         """
-        Get the current internal stance, generating one if it doesn't exist.
-        
-        Returns:
-            The agent's current internal stance
+        Get the current internal stance, generating one if it doesn't exist or needs update.
         """
-        if self.internal_stance is None:
-            return self.generate_internal_stance()
-        return self.internal_stance
-    
+        if self.should_update_stance(): # Check if stance needs update
+            self.logger.info(f"Updating stance for {self.name} (V{self.env.votingRound}.D{self.env.discussionRound}). Last update: {self.last_stance_update}")
+            self.generate_internal_stance()
+        elif self.internal_stance is None: # Should be caught by should_update_stance, but as a safeguard
+            self.logger.info(f"No stance found for {self.name}, generating initial stance.")
+            self.generate_internal_stance()
+            
+        return self.internal_stance if self.internal_stance is not None else ""
+
     def should_update_stance(self) -> bool:
         """
         Determine if the agent should update their internal stance.
-        
-        Returns:
-            True if stance should be updated, False otherwise
+        Updates if: no stance, no last_stance_update, or new activity (vote/discussion round).
         """
-        # Update stance if:
-        # 1. No stance exists yet
-        # 2. There's been new voting or discussion activity since last update
-        if self.internal_stance is None:
+        if self.internal_stance is None or self.last_stance_update is None:
             return True
-            
-        if self.last_stance_update is None:
-            return True
-            
+        
         # Check if there's been new activity since last stance update
-        current_activity = (self.env.votingRound, self.env.discussionRound)
-        
-        # If we have stance history, compare with last recorded activity
+        # This requires stance_history to store the rounds at which stance was generated
         if self.stance_history:
-            last_entry = self.stance_history[-1]
-            last_activity = (last_entry["voting_round"], last_entry["discussion_round"])
-            return current_activity != last_activity
-        
-        return True
+            last_recorded_activity = (self.stance_history[-1]['voting_round'], self.stance_history[-1]['discussion_round'])
+            current_activity = (self.env.votingRound, self.env.discussionRound)
+            if current_activity > last_recorded_activity:
+                return True # New round activity detected
+        else:
+            # No history, but stance exists. This implies it might be the first round after init.
+            # If current rounds are > 0 and it matches initial state, it might not need update unless forced.
+            # However, if it's the very first time, it should update.
+            # This case is mostly covered by internal_stance is None.
+            # If stance_history is empty but stance exists, it means it was set without history, perhaps an initial default.
+            # Let's assume if history is empty, and rounds have started, it's safer to update.
+            if self.env.votingRound > 0 or self.env.discussionRound > 0:
+                 return True
 
-    def get_last_three_speeches(self) -> str:
-        """Get this agent's last 3 speeches for style continuity."""
-        agent_speeches = []
-        
-        # Go through discussion history and collect this agent's speeches
-        for round_idx, round_comments in enumerate(self.env.discussionHistory):
-            for comment in round_comments:
-                if comment['agent_id'] == self.agent_id:
-                    agent_speeches.append({
-                        'round': round_idx + 1,
-                        'message': comment['message']
-                    })
-        
-        # Get last 3 speeches
-        recent_speeches = agent_speeches[-3:] if len(agent_speeches) >= 3 else []
-        
-        if not recent_speeches:
-            return ""
-        
-        formatted_speeches = []
-        for speech in recent_speeches:
-            formatted_speeches.append(f"Round {speech['round']}: {speech['message']}")
-        
-        return "Your last 3 speeches (for style reference):\n" + "\n\n".join(formatted_speeches) + "\n"
+        return False # Default to not updating if none of the above conditions met
+
+    # Removed get_last_three_speeches - covered by PromptVariableGenerator's recent_speech_snippets
+    # Removed get_short_term_memory - specific STM components should be individual prompt variables
+
+    def get_last_stance(self) -> str:
+        """Get the most recent internal stance text."""
+        return self.internal_stance if self.internal_stance else "No previous stance recorded."
+
+    # Persona and Profile Management (Example placeholders - adapt to your CSV loading)
+    def load_persona_from_data(self, cardinal_data: Dict):
+        """Load persona details from provided data (e.g., a row from CSV)."""
+        self.persona_internal = cardinal_data.get('internal_persona', '')
+        self.profile_public = cardinal_data.get('external_profile', '')
+        # self.background is already set in __init__
+        self.name = cardinal_data.get('name', self.name)
+        self.cardinal_id = cardinal_data.get('cardinal_id', self.agent_id) # Ensure cardinal_id is correctly set
+        self.logger.info(f"Loaded persona for {self.name} (Cardinal ID: {self.cardinal_id})")
+
+    # Example of how an agent might be updated with data post-initialization
+    # This would typically be called by the environment after loading all agent data.
+    # For now, this is a placeholder method.
+    def update_agent_details(self, details: Dict):
+        """Update agent details, e.g., from a central data source after init."""
+        if 'internal_persona' in details: self.persona_internal = details['internal_persona']
+        if 'profile_public' in details: self.profile_public = details['profile_public']
+        if 'role_tag' in details: self.role_tag = details['role_tag']
+        # Add other relevant fields as necessary
+        self.logger.debug(f"Agent {self.name} details updated.")
+
+    def __repr__(self):
+        return f"Agent(id={self.agent_id}, name='{self.name}', role='{self.role_tag}')"
+
+    def get_recent_speech_snippets(self) -> str:
+        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
+        self.logger.warning("Agent.get_recent_speech_snippets() called directly. This should be handled by PromptVariableGenerator.")
+        return "Agent-level speech snippets placeholder."
 
     def get_short_term_memory(self) -> str:
-        """Compile short-term memory components for discussion prompts."""
-        memory_components = []
-        
-        # Add last 3 speeches
-        last_speeches = self.get_last_three_speeches()
-        if last_speeches:
-            memory_components.append(last_speeches)
-        
-        if not memory_components:
-            return ""
-        
-        return "SHORT-TERM MEMORY:\n" + "\n".join(memory_components) + "\n"
-    
-    def get_recent_speech_snippets(self) -> str:
-        """Get last 2-3 speech snippets from this agent to avoid verbatim reuse."""
-        agent_speeches = []
-        
-        # Collect this agent's recent speeches
-        for round_idx, round_comments in enumerate(self.env.discussionHistory):
-            for comment in round_comments:
-                if comment['agent_id'] == self.agent_id:
-                    # Extract first ~30 words as snippet
-                    words = comment['message'].split()
-                    snippet = ' '.join(words[:30])
-                    if len(words) > 30:
-                        snippet += "..."
-                    
-                    agent_speeches.append({
-                        'round': round_idx + 1,
-                        'snippet': snippet
-                    })
-        
-        # Get last 2-3 speeches
-        recent_speeches = agent_speeches[-3:] if len(agent_speeches) >= 2 else agent_speeches
-        
-        if not recent_speeches:
-            return "No previous speeches"
-        
-        formatted_snippets = []
-        for speech in recent_speeches:
-            formatted_snippets.append(f"Round {speech['round']}: \"{speech['snippet']}\"")
-        
-        return " | ".join(formatted_snippets)
-    
-    def get_last_stance(self) -> str:
-        """Get the agent's last stance from their stance history."""
-        if not self.stance_history:
-            return "None - this is your first stance."
-        
-        last_entry = self.stance_history[-1]
-        last_stance = last_entry.get("stance", "")
-        voting_round = last_entry.get("voting_round", "?")
-        discussion_round = last_entry.get("discussion_round", "?")
-        
-        return f"Previous stance (V{voting_round}.D{discussion_round}): {last_stance}"
+        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
+        self.logger.warning("Agent.get_short_term_memory() called directly. This should be handled by PromptVariableGenerator.")
+        return "Agent-level STM placeholder."
 
-    def get_persona_internal(self) -> str:
-        """
-        Get the agent's internal persona, generating one if it doesn't exist.
-        
-        Returns:
-            The agent's internal persona
-        """
-        if not hasattr(self, 'persona_internal') or not self.persona_internal:
-            return self.generate_persona_internal()
-        return self.persona_internal
+    def promptize_vote_history(self) -> str:
+        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
+        self.logger.warning("Agent.promptize_vote_history() called directly. This should be handled by PromptVariableGenerator.")
+        if self.vote_history:
+            return f"Your vote history: {len(self.vote_history)} votes cast."
+        return "No votes cast yet by you."
+
+    def promptize_voting_results_history(self) -> str:
+        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
+        self.logger.warning("Agent.promptize_voting_results_history() called directly. This should be handled by PromptVariableGenerator.")
+        if self.env.votingHistory:
+            return f"Overall voting history: {len(self.env.votingHistory)} rounds recorded."
+        return "No overall voting history available."
