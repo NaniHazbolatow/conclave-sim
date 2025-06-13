@@ -3,6 +3,7 @@ import random
 import threading
 import logging
 import math
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from typing import Dict, List, Optional
@@ -33,14 +34,147 @@ class ConclaveEnv:
         self.simulation_config = self.config.get_simulation_config()
         self.max_speakers_per_round = self.simulation_config.get("max_speakers_per_round", 5)
         
-        # Get voting configuration
+        # Apply testing group overrides if enabled
+        self.config.apply_testing_group_overrides()
+        
+        # Get voting configuration (after potential overrides)
         voting_config = self.simulation_config.get("voting", {})
-        self.supermajority_threshold = voting_config.get("supermajority_threshold", 0.667)
+        self.supermajority_threshold = self.config.get_supermajority_threshold()
+        
+        # Testing groups support
+        self.testing_groups_enabled = self.config.is_testing_groups_enabled()
+        self.candidate_ids = []
+        if self.testing_groups_enabled:
+            self.candidate_ids = self.config.get_testing_group_candidate_ids()
+            logger.info(f"Testing groups enabled. Candidates: {self.candidate_ids}")
     
     def freeze_agent_count(self):
         """Freeze the agent count to match the loaded roster. Call after loading all agents."""
         self.num_agents = len(self.agents)
 
+    # Testing groups candidate/elector helper methods
+    def is_candidate(self, agent_id: int) -> bool:
+        """Check if an agent is a candidate in testing groups mode."""
+        if not self.testing_groups_enabled:
+            return True  # In normal mode, all agents can be candidates
+        return agent_id in self.candidate_ids
+
+    def get_candidates_list(self) -> List[int]:
+        """Get list of candidate agent IDs."""
+        if not self.testing_groups_enabled:
+            return list(range(self.num_agents))  # All agents are candidates in normal mode
+        return self.candidate_ids.copy()
+
+    def get_candidates_description(self) -> str:
+        """Get a formatted description of candidates for prompts."""
+        candidates = self.get_candidates_list()
+        if not candidates:
+            return "No candidates designated."
+        
+        candidate_names = []
+        for agent_id in candidates:
+            if agent_id < len(self.agents):
+                agent = self.agents[agent_id]
+                cardinal_id = getattr(agent, 'cardinal_id', agent_id)
+                candidate_names.append(f"Cardinal {cardinal_id} - {agent.name} (Agent ID: {agent_id})")
+            else:
+                candidate_names.append(f"Agent {agent_id} - (Not loaded)")
+        
+        return "Designated candidates:\n" + "\n".join(candidate_names)
+
+    def is_valid_vote_candidate(self, candidate_id: int) -> bool:
+        """Check if a candidate ID is valid for voting in current mode."""
+        # Basic range check
+        if not (0 <= candidate_id < self.num_agents):
+            return False
+        
+        # In testing groups mode, only designated candidates can receive votes
+        if self.testing_groups_enabled:
+            return candidate_id in self.candidate_ids
+        
+        return True
+
+    def get_role_description(self, agent_id: int) -> str:
+        """Get the role description for an agent (candidate or elector)."""
+        if self.is_candidate(agent_id):
+            return "candidate"
+        else:
+            return "elector"
+
+    def load_agents_from_config(self) -> None:
+        """Load agents based on testing groups configuration or all agents in normal mode."""
+        # Import here to avoid circular imports
+        from ..agents.base import Agent
+        
+        # Read cardinals from CSV file
+        cardinals_df = pd.read_csv('data/cardinal_electors_2025.csv')
+        
+        # Read persona data from separate CSV file
+        personas_df = pd.read_csv('data/cardinal_electors_personas.csv')
+        
+        # Merge the dataframes on Cardinal_ID to get both background and persona data
+        merged_df = cardinals_df.merge(personas_df, on='Cardinal_ID', how='left', suffixes=('', '_persona'))
+        
+        if self.testing_groups_enabled:
+            # Get the cardinal IDs for the current testing group
+            cardinal_ids = self.config.get_testing_group_cardinal_ids()
+            logger.info(f"Loading testing group with {len(cardinal_ids)} cardinals")
+            
+            # Filter dataframe to only include cardinals in the testing group
+            merged_df = merged_df[merged_df['Cardinal_ID'].isin(cardinal_ids)]
+            
+            if len(merged_df) != len(cardinal_ids):
+                loaded_ids = set(merged_df['Cardinal_ID'].tolist())
+                missing_ids = set(cardinal_ids) - loaded_ids
+                logger.warning(f"Some cardinal IDs not found in CSV: {missing_ids}")
+        else:
+            # In normal mode, optionally limit number of cardinals based on config
+            num_cardinals = self.config.get_num_cardinals()
+            if num_cardinals and num_cardinals < len(merged_df):
+                merged_df = merged_df.head(num_cardinals)
+                logger.info(f"Loading first {num_cardinals} cardinals from CSV")
+        
+        # Create Agent instances and add them to env.agents
+        for list_index, (idx, row) in enumerate(merged_df.iterrows()):
+            agent = Agent(
+                agent_id=list_index,  # Use list index as agent_id for consistent indexing
+                name=row['Name'],
+                background=row['Background'],
+                env=self
+            )
+            # Store the original Cardinal_ID for reference
+            agent.cardinal_id = row['Cardinal_ID']
+            
+            # Store persona data
+            agent.persona_internal = row.get('Internal_Persona', '')
+            agent.profile_public = row.get('External_Persona', '')
+            
+            self.agents.append(agent)
+        
+        # Update candidate_ids to use list indices instead of Cardinal_IDs
+        if self.testing_groups_enabled:
+            original_candidate_ids = self.config.get_testing_group_candidate_ids()
+            # Map Cardinal_IDs to list indices
+            cardinal_id_to_index = {row['Cardinal_ID']: idx for idx, (_, row) in enumerate(merged_df.iterrows())}
+            self.candidate_ids = [cardinal_id_to_index[cid] for cid in original_candidate_ids if cid in cardinal_id_to_index]
+            logger.info(f"Mapped candidate Cardinal_IDs {original_candidate_ids} to list indices {self.candidate_ids}")
+        
+        # Freeze agent count after loading
+        self.freeze_agent_count()
+        
+        # Set up the prompt manager with the environment after agents are loaded
+        from ..config.prompts import get_prompt_manager
+        prompt_manager = get_prompt_manager()
+        prompt_manager.set_environment(self)
+        logger.info("Prompt manager environment updated with ConclaveEnv instance")
+        
+        logger.info(f"Loaded {self.num_agents} agents")
+        if self.testing_groups_enabled:
+            logger.info(f"Testing group candidates: {self.candidate_ids}")
+            logger.info(f"Testing group setup:\n{self.get_candidates_description()}")
+        
+        logger.info(f"\n{self.list_candidates_for_prompt(randomize=False)}")
+    
     def reset_discussion_speakers_for_new_election_round(self):
         """Reset the set of agents who have spoken in the current election round."""
         self.agents_spoken_in_current_election = set()
@@ -171,7 +305,7 @@ class ConclaveEnv:
         voting_results = sorted(self.votingBuffer.items(), key=lambda x: x[1], reverse=True)
         logger.debug(f"Sorted voting results: {voting_results}")
         
-        voting_results_str = "\n".join([f"Cardinal {i} - {self.agents[i].name}: {votes}" for i, votes in voting_results])
+        voting_results_str = "\n".join([f"Cardinal {getattr(self.agents[i], 'cardinal_id', i)} - {self.agents[i].name}: {votes}" for i, votes in voting_results])
         logger.debug(f"=== END VOTE AGGREGATION DEBUG ===")
         
         logger.info(f"Voting round {self.votingRound} completed.\n{voting_results_str}")
@@ -291,7 +425,7 @@ class ConclaveEnv:
 
         # Log the discussion
         discussion_str = "\n\n".join([
-            f"Cardinal {comment['agent_id']} - {self.agents[comment['agent_id']].name} "
+            f"Cardinal {getattr(self.agents[comment['agent_id']], 'cardinal_id', comment['agent_id'])} - {self.agents[comment['agent_id']].name} "
             f"{comment['message']}"
             for comment in round_comments
         ])
@@ -314,8 +448,19 @@ class ConclaveEnv:
     def list_candidates_for_prompt(self, randomize: bool = True) -> str:
         # For voting prompts, don't randomize and show clean ID→Name mapping
         candidates = []
-        for agent in self.agents:
-            candidates.append(f"{agent.agent_id}\t{agent.name}")
+        
+        # In testing groups mode, only show designated candidates
+        if self.testing_groups_enabled:
+            for agent_id in self.candidate_ids:
+                if agent_id < len(self.agents):
+                    agent = self.agents[agent_id]
+                    cardinal_id = getattr(agent, 'cardinal_id', agent_id)
+                    candidates.append(f"{agent.agent_id}\t{agent.name} (Cardinal {cardinal_id}) (CANDIDATE)")
+        else:
+            # Normal mode: show all agents
+            for agent in self.agents:
+                cardinal_id = getattr(agent, 'cardinal_id', agent.agent_id)
+                candidates.append(f"{agent.agent_id}\t{agent.name} (Cardinal {cardinal_id})")
         
         result = "\n".join(candidates)
         return result
@@ -396,26 +541,12 @@ class ConclaveEnv:
         logger.info("=== END STANCE SUMMARY ===")
     
     def get_all_stances(self) -> Dict[str, str]:
-        """
-        Get all current internal stances from agents.
-        
-        Returns:
-            Dictionary mapping agent names to their current stances
-        """
+        """Get all current internal stances from agents."""
         stances = {}
         for agent in self.agents:
             if agent.internal_stance:
                 stances[agent.name] = agent.internal_stance
         return stances
-    
-    def get_stance_embeddings(self) -> Dict[str, str]:
-        """
-        Get all current internal stances for embedding analysis.
-        
-        Returns:
-            Dictionary mapping agent names to their current stances (for embedding)
-        """
-        return self.get_all_stances()
 
     def generate_initial_stances(self) -> None:
         """
@@ -509,3 +640,32 @@ class ConclaveEnv:
             scoreboard_parts.append(f"{candidate_name}={vote_count}")
         
         return f"Top three: {', '.join(scoreboard_parts)}"
+    
+    def get_valid_candidates_for_stance(self) -> str:
+        """Get a formatted list of valid candidates for internal stance generation."""
+        candidates = self.get_candidates_list()
+        if not candidates:
+            return "All cardinals in the conclave are potential candidates."
+        
+        candidate_lines = []
+        for agent_id in candidates:
+            if agent_id < len(self.agents):
+                agent = self.agents[agent_id]
+                cardinal_id = getattr(agent, 'cardinal_id', agent_id)
+                candidate_lines.append(f"- {agent.name} (Cardinal {cardinal_id})")
+            else:
+                candidate_lines.append(f"- Agent {agent_id} (Not loaded)")
+        
+        if self.testing_groups_enabled:
+            return "Only these cardinals may receive votes:\n" + "\n".join(candidate_lines)
+        else:
+            return "All cardinals in the conclave:\n" + "\n".join(candidate_lines)
+    
+    def get_threshold(self) -> int:
+        """
+        Public method to get the current voting threshold.
+        
+        Returns:
+            The minimum number of votes required to elect a pope
+        """
+        return self._calculate_voting_threshold()

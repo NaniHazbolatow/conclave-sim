@@ -48,9 +48,7 @@ llm:
   # Remote Model Configuration (OpenRouter API)
   remote:
     # Choose your preferred cloud model:
-    # model_name: "openai/gpt-4o-mini"      # Fast, cost-effective
-    # model_name: "mistralai/mistral-nemo"  # Good balance
-    # model_name: "qwen/qwen3-14b"          # High quality
+    #model_name: "openai/gpt-4o-mini"      # Fast, cost-effective
     model_name: "meta-llama/llama-3.1-8b-instruct"  # Meta Llama 3.1 8B
     
     # API settings
@@ -93,6 +91,72 @@ embeddings:
     min_cluster_size: 2       # Minimum cardinals per cluster
 
 # ===================================================================
+# TESTING GROUPS CONFIGURATION
+# ===================================================================
+# Predetermined testing groups with specific candidates and electors
+# These override simulation settings when activated
+testing_groups:
+  enabled: true  # Set to true to use testing groups instead of regular simulation
+  active_group: "medium"  # Options: "small", "medium", "large"
+  
+  # Small Group: 5 Cardinals, 2 Candidates
+  # Focus on ideological diversity and high centrality candidates
+  small:
+    total_cardinals: 5
+    candidates: 2
+    cardinal_ids: [164, 224, 10, 133, 251]  # Parolin, Tagle, Arinze, Sistach, Zuppi
+    candidate_ids: [164, 224]  # Parolin (moderate), Tagle (progressive)
+    description: "Small testing group focusing on ideological diversity"
+    ideological_balance:
+      conservative: [10]      # Arinze
+      moderate: [164, 133]    # Parolin, Sistach  
+      progressive: [224, 251] # Tagle, Zuppi
+    override_settings:
+      num_cardinals: 5
+      max_speakers_per_round: 5
+      num_discussions: 1
+      max_election_rounds: 8
+      supermajority_threshold: 0.6  # Lower threshold for small group (3/5 = 60%)
+  
+  # Medium Group: 15 Cardinals, 4 Candidates
+  # Balanced representation across regions and theological positions
+  medium:
+    total_cardinals: 15
+    candidates: 4
+    cardinal_ids: [164, 224, 10, 133, 251, 0, 155, 78, 23, 6, 54, 136, 187, 96, 109]
+    candidate_ids: [164, 224, 10, 78]  # Parolin, Tagle, Arinze, Farrell
+    description: "Medium testing group with regional and theological balance"
+    ideological_balance:
+      conservative: [10, 0, 54]        # Arinze, Abril, Collins
+      moderate: [164, 133, 155, 96, 109] # Parolin, Sistach, O'Malley, Gugerotti, Koch
+      progressive: [224, 251, 78, 23, 6, 136, 187] # Tagle, Zuppi, Farrell, Battaglia, Ambongo, Marx, Ranjith
+    override_settings:
+      num_cardinals: 15
+      max_speakers_per_round: 5
+      num_discussions: 3
+      max_election_rounds: 6
+      supermajority_threshold: 0.667  # Standard 2/3 threshold (10/15)
+  
+  # Large Group: 25 Cardinals, 5 Candidates
+  # Comprehensive representation with multiple papabile candidates
+  large:
+    total_cardinals: 25
+    candidates: 5
+    cardinal_ids: [164, 224, 10, 133, 251, 0, 155, 78, 23, 6, 54, 136, 187, 96, 109, 13, 173, 14, 147, 150, 208, 74, 66, 91, 176]
+    candidate_ids: [164, 224, 10, 78, 208]  # Parolin, Tagle, Arinze, Farrell, Sarah
+    description: "Large testing group with comprehensive global representation"
+    ideological_balance:
+      conservative: [10, 0, 54, 208, 74, 66]  # Arinze, Abril, Collins, Sarah, Erdő, De Kesel
+      moderate: [164, 133, 155, 96, 109, 14, 147, 150, 176] # Parolin, Sistach, O'Malley, Gugerotti, Koch, Aveline, Mureşan, Nichols, Prevost
+      progressive: [224, 251, 78, 23, 6, 136, 187, 13, 173, 91] # Tagle, Zuppi, Farrell, Battaglia, Ambongo, Marx, Ranjith, Aveline, Poola, Goh
+    override_settings:
+      num_cardinals: 25
+      max_speakers_per_round: 8
+      num_discussions: 3
+      max_election_rounds: 10
+      supermajority_threshold: 0.667  # Standard 2/3 threshold (17/25)
+
+# ===================================================================
 # SIMULATION SETTINGS
 # ===================================================================
 # Core simulation behavior and rules
@@ -102,11 +166,11 @@ simulation:
   performance_logging: true # Track timing and performance metrics
   
   # Cardinal selection
-  num_cardinals: 20          # Number of cardinals to include in simulation (from CSV head)
+  num_cardinals: 5          # Number of cardinals to include in simulation (from CSV head)
   
   # Discussion structure
   max_speakers_per_round: 5     # Maximum cardinals who can speak per round
-  num_discussions: 4        # Number of complete discussion cycles to run per election round
+  num_discussions: 1        # Number of complete discussion cycles to run per election round
   max_election_rounds: 5    # Maximum number of full election rounds before stopping (no winner required)
   randomize_speaking_order: true  # Whether to randomize the order of speakers in discussion rounds
   discussion_length:

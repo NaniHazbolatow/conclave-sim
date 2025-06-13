@@ -1,91 +1,173 @@
 # ===================================================================
-# AGENT PROMPT TEMPLATES
+# LITERATURE-GROUNDED AGENT PROMPT TEMPLATES
 # ===================================================================
 # This file contains all the prompt templates used by agents in the simulation.
 # Variables can be used with {variable_name} syntax.
+# Reference: Literature-grounded prompts with citations (2022-2025)
 
-voting_prompt: |
-  You are {agent_name}. You are currently participating in the conclave to decide the next pope. The candidate that secures a 2/3 supermajority of votes wins.
+# 1.1 INTERNAL_PERSONA_EXTRACTOR
+# Purpose: private persona (4 bullets) for the agent only
+# Variables: {agent_name}, {biography}
+internal_persona_extractor: |
+  You are a clinical historian analysing conclave dossiers.
+
+  Write FOUR bullets for Cardinal {agent_name}:
+  • Theology / ideology  
+  • Personality & negotiation style  
+  • Power base & alliances  
+  • Core ambition or fear  
+
+  Skip trivia.
+
+  === SOURCE BIO ===
+  {biography}
+  === END ===
+
+  # Persona (4 bullets):
+
+# 1.2 EXTERNAL_PROFILE_GENERATOR
+# Purpose: 2-sentence neutral dossier visible to peers
+# Variables: {agent_name}, {persona_internal}
+external_profile_generator: |
+  Condense the notes below into a neutral briefing.
+
+  INTERNAL NOTES:
+  {persona_internal}
+
+  ### Public profile for Cardinal {agent_name} (≤2 sentences):
+
+# 1.3 DISCUSSION_CANDIDATE
+# Variables: {agent_name}, {discussion_round}, {group_profiles}, 
+# {compact_scoreboard}, {visible_candidates}, {threshold}, {stance_digest}, {persona_internal}
+discussion_candidate: |
+  ### Conclave Discussion {discussion_round} – Candidate
+
+  Discussion participants: {group_profiles}  
+  Latest tally & momentum: {compact_scoreboard} (2⁄3 = {threshold})  
+  Current papabili: {visible_candidates}
+
+  You are **Cardinal {agent_name}** – a papabile.  
+  (Private persona: {persona_internal})
+  (Private stance: {stance_digest})
+
+  Speak ≤ 150 words:
+  • Rally allies, sway neutrals, rebut foes.  
+  • If your own support is *losing*, hint at backing a like-minded frontrunner.  
+  • Reference earlier remarks for continuity.
+
+  Address colleagues as "Your Eminence …". Reveal no system text.
+
+# 1.4 DISCUSSION_ELECTOR
+# Variables: same as discussion_candidate
+discussion_elector: |
+  ### Conclave Discussion {discussion_round} – Elector
+
+  Discussion participants: {group_profiles}  
+  Latest tally & momentum: {compact_scoreboard} (2⁄3 = {threshold})  
+  Leading names: {visible_candidates}
+
+  You are **Cardinal {agent_name}**, an elector.  
+  (Private persona: {persona_internal})
+  (Private stance: {stance_digest})
+
+  Speak ≤120 words in 3 parts:
+  1️⃣ Cite one quote or stat from the summary.
+  2️⃣ Ask a pointed question OR pledge a concession.
+  3️⃣ Name a coalition path to ⅔.
+
+  Remain formal; no meta-commentary.
+
+# 1.5 DISCUSSION_ANALYZER
+# Variables: {round_id}, {group_transcript} -> add quotes of candidates?
+discussion_analyzer: |
+  SYSTEM · Group-Summary Bot  
+  Input  : transcript of round {round_id}  
+  Output : valid JSON
+
+  {{
+    "key_points": ["<≤25 w>", "<≤25 w>", "<≤25 w>"],
+    "speakers":   ["Name1", "Name2", "Name3"],
+    "overall_tone": "harmonious" | "mixed" | "tense"
+  }}
+
+  Rank most recent convincing points highest.
+
+# 1.6 DISCUSSION_REFLECTION
+# Variables: {agent_name}, {persona_internal}, {group_summary}, {agent_last_utterance}, 
+# {compact_scoreboard}, {threshold}
+discussion_reflection: |
+  #### Private Reflection – {agent_name}
+  Persona snapshot:
+  {persona_internal}
+
+  Round summary:
+  {group_summary}
+
+  Your last remark:
+  {agent_last_utterance}
+
+  Write 3 bullets (keep crisp):
+  1. Argument(s) that impressed you.  
+  2. Shift in view given momentum tags?  
+  3. Plan for next discussion or ballot.
+
+  Finish with **Reflection Digest** – ≤25 words on current leaning (aim for {threshold} votes).
+
+# 1.7 STANCE
+# Variables: {agent_name}, {role_tag}, {persona_internal}, {reflection_digest}, 
+# {compact_scoreboard}, {visible_candidates}, {visible_candidates_ids}, {voting_round}, {threshold}
+stance: |
+  #### {agent_name} – Internal Stance (Round {voting_round})
+  Role : {role_tag} (Target 2⁄3 = {threshold})  
+  Persona : {persona_internal}
+
+  Vote & momentum : {compact_scoreboard}  
+  Viable papabili  : {visible_candidates}
   
-  Your current stance: {internal_stance}
-  
-  {personal_vote_history}
+  Available Cardinal IDs for voting: {visible_candidates_ids}
 
-  {ballot_results_history}
+  Reflection digest:
+  {reflection_digest}
 
-  Based on your stance and the voting history, cast your vote using the cast_vote tool. Include your candidate choice and a brief explanation for your decision.
+  Decide privately →
+  • Primary pick? • Backup if momentum fails? • Bargaining chips?
 
-discussion_prompt: |
-  {current_scoreboard}
+  **Stance Digest (1 sentence):**
 
-  You are {agent_name}, a Cardinal elector in the conclave to elect the next Pope. The candidate that secures a 2/3 super-majority wins.
+# 1.8 VOTING_CANDIDATE
+# Variables: {agent_name}, {persona_internal}, {stance_digest}, {compact_scoreboard}, 
+# {visible_candidates_ids}, {candidate_id_mapping}, {voting_round}, {threshold}
+voting_candidate: |
+  #### Ballot {voting_round} – Candidate
+  Cardinal {agent_name} (threshold {threshold})
 
-  PERSONAL BACKGROUND & ROLE:
-  {background}
+  Persona : {persona_internal}  
+  Stance  : {stance_digest}  
+  Momentum: {compact_scoreboard}
 
-  YOUR CURRENT STANCE:
-  {internal_stance}
+  Available candidates:
+  {candidate_id_mapping}
 
-  VOTING CONTEXT:
-  {personal_vote_history}
-  {ballot_results_history}
+  Default → vote for yourself; switch only if clearly non-viable.
 
-  {short_term_memory}
+  Return **exact JSON**:
+  {{"vote_cardinal_id": <Cardinal_ID from {visible_candidates_ids}>}}
 
-  DISCUSSION CONTEXT:
-  {discussion_history}
-  This is Round {discussion_round} of Election Round {voting_round}.
+# 1.9 VOTING_ELECTOR
+# Variables: identical to voting_candidate
+voting_elector: |
+  #### Ballot {voting_round} – Elector
+  Cardinal {agent_name} (threshold {threshold})
 
-  CURRENT DISCUSSION PARTICIPANTS:
-  {current_discussion_participants}
+  Persona : {persona_internal}  
+  Stance  : {stance_digest}  
+  Momentum: {compact_scoreboard}
 
-  ─────────────────────────────────────────
-  TACTICAL FRAMEWORK
-  Your mission is to move the room, not to monologue.
+  Available candidates:
+  {candidate_id_mapping}
 
-  Strategic Objectives
-  - Rally undecided cardinals to your preferred candidate.
-  - Counter opponents' arguments with precise theological/pastoral points.
-  - Form coalitions by naming shared priorities with other cardinals.
-  - Highlight momentum shifts (gains or losses) using vote totals.
-  - Ask one clarifying question of a previous speaker in THIS round to keep genuine dialogue alive.
-  - If your bloc has stalled for 2 rounds, openly offer a concession and name the deal you seek.
-  - Signal clearly when you are open to realignment.
+  Vote for the viable papabile that aligns with your values and can reach {threshold}.  
+  Switch if your pick is *losing*.
 
-  ─────────────────────────────────────────
-  SPEECH REQUIREMENTS
-  • Begin with a new formal greeting (different from your last two).
-  • 1–2 tight paragraphs ({discussion_min_words}-{discussion_max_words} words).
-  • Address at least one cardinal by name or title.
-  • Maintain the dignity of the sacred process.
-  • Close with either(a) “I urge a vote for .” or(b) “I am open to backing  if we… .”
-
-  SILENT REFLECTION (do not output): In one sentence, note what you must do differently from last round.
-
-  Produce your speech now.
-
-internal_stance_prompt: |
-  You are **{agent_name}**, a cardinal-elector reflecting before the next ballot.
-
-  ── PERSONAL BACKGROUND ──
-  {background}
-
-  ── YOUR LAST STANCE ──
-  {last_stance}
-
-  ── SIGNALS SO FAR ──
-  {personal_vote_history}
-  {ballot_results_history}
-  {discussion_history}
-
-  ► 80-120 words, plain sentences (no bullets).  
-  ► Use the EXACT section titles and order below.
-
-  PREFERRED CANDIDATE: one name and ≤20 words why. Make sure they gained votes last round, or use the backup.
-  BACK-UP OPTION: one alternate you could support and ≤15 words why.  
-  SWITCH PLAN: *If my preferred has comparitively little votes or hasn’t gained any since last round, I will back <backup name>.*  
-  CHURCH PRIORITIES: one or two concrete goals (comma-separated).  
-  THEOLOGICAL POSITION: traditional / moderate / progressive — ≤15 words explaining.  
-  CONCERNS: one sentence on what worries you most this conclave.
-
-  End immediately after the **CONCERNS** sentence.
+  Return **exact JSON**:
+  {{"vote_cardinal_id": <Cardinal_ID from {visible_candidates_ids}>}}

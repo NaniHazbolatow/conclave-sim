@@ -50,10 +50,14 @@ class Agent:
     def __init__(self, agent_id: int, name: str, background: str, env: ConclaveEnv):
         self.agent_id = agent_id
         self.name = name
-        self.background = background
+        self.background = background  # This serves as 'biography' from glossary
         self.env = env
         self.vote_history = []
         self.logger = logging.getLogger(name)
+        
+        # Load persona data from CSV
+        self.cardinal_id = agent_id  # Cardinal ID from glossary
+        self.role_tag = "ELECTOR"    # Default role, can be "CANDIDATE" or "ELECTOR"
         
         # Internal stance tracking
         self.internal_stance = None  # Current internal stance as plain text
@@ -79,114 +83,103 @@ class Agent:
             raise
 
     def cast_vote(self) -> None:
-        personal_vote_history = self.promptize_vote_history()
-        ballot_results_history = self.promptize_voting_results_history()
+        """Cast a vote using the new variable-based voting prompts."""
+        # Get role information for testing groups and set role_tag
+        if self.env.testing_groups_enabled:
+            self.role_tag = "CANDIDATE" if self.env.is_candidate(self.agent_id) else "ELECTOR"
+        else:
+            self.role_tag = "ELECTOR"  # In normal mode, all can vote, but we treat as electors
         
-        # Get current internal stance (generate if needed)
-        internal_stance = self.get_internal_stance()
+        # Use the updated prompt manager method with agent_id
+        voting_prompt = self.prompt_manager.get_voting_prompt(agent_id=self.agent_id)
         
-        # Use prompt manager to get formatted prompt
-        prompt = self.prompt_manager.get_voting_prompt(
-            agent_name=self.name,
-            internal_stance=internal_stance,
-            personal_vote_history=personal_vote_history,
-            ballot_results_history=ballot_results_history
-        )
+        # Debug log the prompt
+        self.logger.debug(f"Voting prompt for {self.name}: {voting_prompt}")
         
-        # Add candidate list to help with voting decision
-        candidates_list = self.env.list_candidates_for_prompt(randomize=False)
-        prompt += f"\n\nAvailable candidates (ID → Name):\n{candidates_list}\n"
-        prompt += "\n\nIMPORTANT: You must respond with a valid JSON object in exactly this format:\n\n"
-        prompt += '{"function": "cast_vote", "parameters": {"candidate": 1, "explanation": "..."}}\n\n'
-        prompt += "Tool: cast_vote\nDescription: Cast a vote for a candidate\n\n"
-        prompt += "Required parameters:\n"
-        prompt += "- candidate (integer) (REQUIRED): The numeric ID from the candidate list above.\n"
-        prompt += "- explanation (string) (REQUIRED): Explain why you chose this candidate\n\n"
-        prompt += 'Example: {"function": "cast_vote", "parameters": {"candidate": 1, "explanation": "Strong leadership and pastoral experience"}}\n\n'
-        prompt += "Respond with ONLY the JSON object, no other text:"
-        
-        # Only log the prompt for debugging, don't print to console
-        self.logger.debug(f"Voting prompt for {self.name}: {prompt}")
-        
-        # Define vote tool
+        # Define vote tool that expects Cardinal ID
         tools = [
             {
                 "type": "function",
                 "function": {
                     "name": "cast_vote",
-                    "description": "Cast a vote for a candidate",
+                    "description": "Cast a vote for a candidate using their Cardinal ID",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "candidate": {
+                            "vote_cardinal_id": {
                                 "type": "integer",
-                                "description": "Numeric ID from the candidate list"
-                            },
-                            "explanation": {
-                                "type": "string",
-                                "description": "Explain why you chose this candidate"
+                                "description": "Cardinal ID of the candidate to vote for"
                             }
                         },
-                        "required": ["candidate", "explanation"]
+                        "required": ["vote_cardinal_id"]
                     }
                 }
             }
         ]
+        
         try:
             # Use robust tool calling
-            messages = [{"role": "user", "content": prompt}]
+            messages = [{"role": "user", "content": voting_prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="cast_vote")
             
             # Debug: Log the full tool calling result
             self.logger.debug(f"=== VOTE TOOL CALLING RESULT FOR {self.name} ===")
             self.logger.debug(f"Success: {result.success}")
-            self.logger.debug(f"Function: {result.function_name}")
-            self.logger.debug(f"Strategy used: {result.strategy_used}")
             self.logger.debug(f"Arguments: {result.arguments}")
             self.logger.debug(f"Error: {result.error}")
-            self.logger.debug(f"Raw response: {result.raw_response}")
             self.logger.debug(f"=== END VOTE RESULT ===")
             
             if result.success and result.arguments:
-                candidate_id = result.arguments.get("candidate")
-                reasoning = result.arguments.get("explanation", "No explanation provided.")
+                cardinal_id = result.arguments.get("vote_cardinal_id")
 
-                # Validate candidate ID
-                if candidate_id is not None:
+                # Validate and convert Cardinal ID to agent ID
+                if cardinal_id is not None:
                     try:
-                        cand_id = int(candidate_id)
-                        if not 0 <= cand_id < len(self.env.agents):
-                            raise ValueError(f"ID {cand_id} out of range (0-{len(self.env.agents)-1})")
+                        cardinal_id = int(cardinal_id)
                         
-                        candidate_id = cand_id
-                        self.logger.debug(f"Valid candidate ID {candidate_id} selected")
+                        # Find the agent with this cardinal_id
+                        agent_id = None
+                        for i, agent in enumerate(self.env.agents):
+                            if getattr(agent, 'cardinal_id', i) == cardinal_id:
+                                agent_id = i
+                                break
+                        
+                        if agent_id is None:
+                            available_cardinals = [getattr(agent, 'cardinal_id', i) for i, agent in enumerate(self.env.agents)]
+                            raise ValueError(f"Cardinal ID {cardinal_id} not found. Available: {available_cardinals}")
+                        
+                        # Check if candidate is valid for voting in current mode
+                        if not self.env.is_valid_vote_candidate(agent_id):
+                            available_candidates = [getattr(self.env.agents[cid], 'cardinal_id', cid) for cid in self.env.get_candidates_list()]
+                            raise ValueError(f"Cardinal {cardinal_id} is not eligible to receive votes. Available candidates: {available_candidates}")
+                        
+                        self.logger.debug(f"Valid Cardinal ID {cardinal_id} (Agent {agent_id}) selected")
+                        
+                        # Save vote reasoning (simplified since new prompts don't include explanation)
+                        self.vote_history.append({
+                            "vote": agent_id,
+                            "reasoning": f"Voted for Cardinal {cardinal_id} based on internal stance and voting prompt analysis"
+                        })
+
+                        # Cast the vote using agent_id
+                        self.env.cast_vote(agent_id, self.agent_id)
+                        voted_candidate_name = self.env.agents[agent_id].name
+                        self.logger.info(f"{self.name} voted for Cardinal {cardinal_id} - {voted_candidate_name}")
+                        return
+                        
                     except (ValueError, TypeError) as e:
-                        self.logger.error(f"Invalid candidate ID '{candidate_id}': {e}")
-                        raise ValueError(f"Invalid candidate ID: {candidate_id}")
+                        self.logger.error(f"Invalid Cardinal ID '{cardinal_id}': {e}")
+                        raise ValueError(f"Invalid Cardinal ID: {cardinal_id}")
                 else:
-                    self.logger.error("No candidate ID provided in vote")
-                    raise ValueError("No candidate ID provided")
-
-                # Save vote reasoning
-                self.vote_history.append({
-                    "vote": candidate_id,
-                    "reasoning": reasoning
-                })
-
-                # Cast the vote
-                self.env.cast_vote(candidate_id, self.agent_id)
-                voted_candidate_name = self.env.agents[candidate_id].name
-                self.logger.info(f"{self.name} ({self.agent_id}) voted for {voted_candidate_name} ({candidate_id}) because\n{reasoning}")
-                self.logger.debug(f"Vote successfully processed: {self.name} -> {voted_candidate_name} (ID: {candidate_id})")
-                return
+                    self.logger.error("No Cardinal ID provided in vote")
+                    raise ValueError("No Cardinal ID provided")
             else:
                 self.logger.error(f"Tool calling failed: {result.error}")
-                self.logger.debug(f"Tool calling success: {result.success}, arguments: {result.arguments}")
                 raise ValueError(f"Tool calling failed: {result.error}")
 
         except Exception as e:
             # Log the error and re-raise to fail hard
-            self.logger.error(f"Error in LlmAgent {self.agent_id} voting: {e}")
+            self.logger.error(f"Error in {self.name} voting: {e}")
             self.logger.debug(f"Voting failed for {self.name}", exc_info=True)
             raise  # Re-raise the exception to fail hard
 
@@ -213,9 +206,14 @@ class Agent:
         
         # Get current scoreboard for visual context
         current_scoreboard = self.env.get_current_scoreboard()
+        
+        # Get role information for testing groups
+        role_description = self.env.get_role_description(self.agent_id)
+        candidates_description = self.env.get_candidates_description()
 
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_discussion_prompt(
+            agent_id=self.agent_id,
             current_scoreboard=current_scoreboard,
             agent_name=self.name,
             background=self.background,
@@ -229,7 +227,9 @@ class Agent:
             discussion_round=self.env.discussionRound,
             voting_round=self.env.votingRound,
             discussion_min_words=self.config.get_discussion_min_words(),
-            discussion_max_words=self.config.get_discussion_max_words()
+            discussion_max_words=self.config.get_discussion_max_words(),
+            role_description=role_description,
+            candidates_description=candidates_description
         )
 
         # Define speak tool
@@ -315,7 +315,7 @@ class Agent:
             if results:
                 # Map agent indices to Cardinal_ID for display
                 voting_results_str = "\n".join([
-                    f"Cardinal {self.env.agents[i].agent_id} - {self.env.agents[i].name}: {votes}" 
+                    f"Cardinal {getattr(self.env.agents[i], 'cardinal_id', i)} - {self.env.agents[i].name}: {votes}" 
                     for i, votes in voting_results
                 ])
                 return f"\n{voting_results_str}\n"
@@ -344,15 +344,22 @@ class Agent:
         # Get the last stance for continuity
         last_stance = self.get_last_stance()
         
+        # Get valid candidates list for stance generation
+        valid_candidates_list = self.env.get_valid_candidates_for_stance()
+        
         # Use prompt manager to get formatted prompt
         prompt = self.prompt_manager.get_internal_stance_prompt(
+            agent_id=self.agent_id,
             agent_name=self.name,
             background=self.background,
             last_stance=last_stance,
+            valid_candidates_list=valid_candidates_list,
             candidates_list=self.env.list_candidates_for_prompt(randomize=False),
             personal_vote_history=personal_vote_history,
             ballot_results_history=ballot_results_history,
-            discussion_history=discussion_history
+            discussion_history=discussion_history,
+            voting_round=self.env.votingRound,
+            discussion_round=self.env.discussionRound
         )
         
         try:
@@ -406,15 +413,6 @@ class Agent:
                     "discussion_round": self.env.discussionRound
                 }
                 self.stance_history.append(stance_entry)
-                
-                # Enhanced logging with full stance content
-                self.logger.info(f"{self.name} generated internal stance (V{self.env.votingRound}.D{self.env.discussionRound})")
-                self.logger.info(f"=== INTERNAL STANCE: {self.name} ===")
-                self.logger.info(f"Round: Voting {self.env.votingRound}, Discussion {self.env.discussionRound}")
-                self.logger.info(f"Word count: {word_count}")
-                self.logger.info(f"Stance Content:")
-                self.logger.info(stance)
-                self.logger.info(f"=== END STANCE: {self.name} ===")
                 
                 return stance
             else:
@@ -537,12 +535,7 @@ Start your response immediately with your stance (no introductory text):"""
         return True
 
     def get_last_three_speeches(self) -> str:
-        """
-        Get this agent's last 3 speeches for style continuity.
-        
-        Returns:
-            Formatted string of last 3 speeches or empty string if less than 3
-        """
+        """Get this agent's last 3 speeches for style continuity."""
         agent_speeches = []
         
         # Go through discussion history and collect this agent's speeches
@@ -566,109 +559,8 @@ Start your response immediately with your stance (no introductory text):"""
         
         return "Your last 3 speeches (for style reference):\n" + "\n\n".join(formatted_speeches) + "\n"
 
-    def get_influential_speeches(self) -> str:
-        """
-        Identify 2 speeches from other cardinals that most influenced vote shifts.
-        
-        Returns:
-            Formatted string of influential speeches
-        """
-        if len(self.env.votingHistory) < 2:
-            return ""
-        
-        # Analyze vote shifts between last two rounds
-        current_votes = self.env.votingHistory[-1] if self.env.votingHistory else {}
-        previous_votes = self.env.votingHistory[-2] if len(self.env.votingHistory) > 1 else {}
-        
-        # Calculate vote changes
-        vote_changes = {}
-        for candidate_id in set(list(current_votes.keys()) + list(previous_votes.keys())):
-            current_count = current_votes.get(candidate_id, 0)
-            previous_count = previous_votes.get(candidate_id, 0)
-            change = current_count - previous_count
-            if change != 0:
-                candidate_name = self.env.agents[candidate_id].name if candidate_id < len(self.env.agents) else f"Cardinal_{candidate_id}"
-                vote_changes[candidate_name] = change
-        
-        if not vote_changes:
-            return ""
-        
-        # Get recent discussion round (most likely to have influenced votes)
-        if not self.env.discussionHistory:
-            return ""
-        
-        last_discussion = self.env.discussionHistory[-1]
-        
-        # Filter out this agent's own speeches and get others' speeches
-        other_speeches = []
-        for comment in last_discussion:
-            if comment['agent_id'] != self.agent_id:
-                speaker_name = self.env.agents[comment['agent_id']].name
-                other_speeches.append({
-                    'speaker': speaker_name,
-                    'message': comment['message']
-                })
-        
-        # Select up to 2 most relevant speeches (simple heuristic: longer speeches often more influential)
-        influential_speeches = sorted(other_speeches, key=lambda x: len(x['message']), reverse=True)[:2]
-        
-        if not influential_speeches:
-            return ""
-        
-        # Format the output
-        result = "Recent speeches that may have influenced vote shifts:\n"
-        for speech in influential_speeches:
-            result += f"\n{speech['speaker']}: {speech['message']}\n"
-        
-        return result
-
-    def get_unresolved_critiques(self) -> str:
-        """
-        Identify major unresolved critiques against preferred candidates.
-        
-        Returns:
-            Formatted string of critiques to address
-        """
-        # Get current preferred candidate from internal stance
-        if not self.internal_stance:
-            return ""
-        
-        # Simple heuristic: look for negative mentions of candidates in recent discussions
-        critiques = []
-        
-        # Look through recent discussion history
-        recent_rounds = self.env.discussionHistory[-2:] if len(self.env.discussionHistory) >= 2 else self.env.discussionHistory
-        
-        for round_comments in recent_rounds:
-            for comment in round_comments:
-                message = comment['message'].lower()
-                speaker_name = self.env.agents[comment['agent_id']].name
-                
-                # Look for criticism keywords combined with candidate names
-                critique_words = ['concern', 'worry', 'problem', 'issue', 'against', 'oppose', 'critique', 'criticism', 'weakness', 'flaw']
-                
-                for agent in self.env.agents:
-                    candidate_name = agent.name.lower()
-                    # Check if candidate is mentioned with critique words
-                    if candidate_name in message and any(word in message for word in critique_words):
-                        if comment['agent_id'] != self.agent_id:  # Don't include own critiques
-                            critiques.append(f"{speaker_name} raised concerns about {agent.name}")
-        
-        if not critiques:
-            return ""
-        
-        # Remove duplicates and limit to most recent
-        unique_critiques = list(set(critiques))[:3]
-        
-        return "Unresolved critiques to address:\n" + "\n".join(f"- {critique}" for critique in unique_critiques) + "\n"
-
     def get_short_term_memory(self) -> str:
-        """
-        Compile all short-term memory components for discussion prompts.
-        
-        Returns:
-            Formatted short-term memory context
-        """
+        """Compile short-term memory components for discussion prompts."""
         memory_components = []
         
         # Add last 3 speeches
@@ -676,28 +568,13 @@ Start your response immediately with your stance (no introductory text):"""
         if last_speeches:
             memory_components.append(last_speeches)
         
-        # Add influential speeches
-        influential = self.get_influential_speeches()
-        if influential:
-            memory_components.append(influential)
-        
-        # Add unresolved critiques
-        critiques = self.get_unresolved_critiques()
-        if critiques:
-            memory_components.append(critiques)
-        
         if not memory_components:
             return ""
         
         return "SHORT-TERM MEMORY:\n" + "\n".join(memory_components) + "\n"
     
     def get_recent_speech_snippets(self) -> str:
-        """
-        Get last 2-3 speech snippets from this agent to avoid verbatim reuse.
-        
-        Returns:
-            Formatted string with recent speech snippets for memory cue
-        """
+        """Get last 2-3 speech snippets from this agent to avoid verbatim reuse."""
         agent_speeches = []
         
         # Collect this agent's recent speeches
@@ -728,12 +605,7 @@ Start your response immediately with your stance (no introductory text):"""
         return " | ".join(formatted_snippets)
     
     def get_last_stance(self) -> str:
-        """
-        Get the agent's last stance from their stance history.
-        
-        Returns:
-            The agent's previous stance, or "None - this is your first stance" if no previous stance exists
-        """
+        """Get the agent's last stance from their stance history."""
         if not self.stance_history:
             return "None - this is your first stance."
         
@@ -743,3 +615,14 @@ Start your response immediately with your stance (no introductory text):"""
         discussion_round = last_entry.get("discussion_round", "?")
         
         return f"Previous stance (V{voting_round}.D{discussion_round}): {last_stance}"
+
+    def get_persona_internal(self) -> str:
+        """
+        Get the agent's internal persona, generating one if it doesn't exist.
+        
+        Returns:
+            The agent's internal persona
+        """
+        if not hasattr(self, 'persona_internal') or not self.persona_internal:
+            return self.generate_persona_internal()
+        return self.persona_internal

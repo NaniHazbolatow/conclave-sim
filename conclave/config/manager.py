@@ -6,7 +6,7 @@ Handles loading and managing configuration from YAML files.
 import yaml
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -145,20 +145,29 @@ class ConfigManager:
         return self.get_tool_calling_config().get("retry_backoff_sec", 2.0)
     
     # Simulation configuration methods
-    def get_num_cardinals(self) -> int:
-        """Get the number of cardinals to include in simulation."""
-        return self.get_simulation_config().get("num_cardinals", 5)
     
     def get_max_speakers_per_round(self) -> int:
         """Get the maximum number of speakers per round."""
+        if self.is_testing_groups_enabled():
+            overrides = self.get_testing_group_overrides()
+            if "max_speakers_per_round" in overrides:
+                return overrides["max_speakers_per_round"]
         return self.get_simulation_config().get("max_speakers_per_round", 5)
     
     def get_num_discussions(self) -> int:
         """Get the number of complete discussion cycles to run."""
+        if self.is_testing_groups_enabled():
+            overrides = self.get_testing_group_overrides()
+            if "num_discussions" in overrides:
+                return overrides["num_discussions"]
         return self.get_simulation_config().get("num_discussions", 1)
     
     def get_max_election_rounds(self) -> int:
         """Get the maximum number of election rounds before stopping."""
+        if self.is_testing_groups_enabled():
+            overrides = self.get_testing_group_overrides()
+            if "max_election_rounds" in overrides:
+                return overrides["max_election_rounds"]
         return self.get_simulation_config().get("max_election_rounds", 3)
     
     def get_randomize_speaking_order(self) -> bool:
@@ -279,7 +288,79 @@ class ConfigManager:
     def __repr__(self) -> str:
         return self.__str__()
 
-
+    # Testing groups configuration methods
+    def get_testing_groups_config(self) -> Dict[str, Any]:
+        """Get the testing groups configuration."""
+        return self.config.get("testing_groups", {})
+    
+    def is_testing_groups_enabled(self) -> bool:
+        """Check if testing groups are enabled."""
+        return self.get_testing_groups_config().get("enabled", False)
+    
+    def get_active_testing_group(self) -> str:
+        """Get the active testing group name."""
+        return self.get_testing_groups_config().get("active_group", "small")
+    
+    def get_testing_group_config(self, group_name: str = None) -> Dict[str, Any]:
+        """Get configuration for a specific testing group."""
+        if group_name is None:
+            group_name = self.get_active_testing_group()
+        return self.get_testing_groups_config().get(group_name, {})
+    
+    def get_testing_group_cardinal_ids(self, group_name: str = None) -> List[int]:
+        """Get the list of cardinal IDs for a testing group."""
+        group_config = self.get_testing_group_config(group_name)
+        return group_config.get("cardinal_ids", [])
+    
+    def get_testing_group_candidate_ids(self, group_name: str = None) -> List[int]:
+        """Get the list of candidate IDs for a testing group."""
+        group_config = self.get_testing_group_config(group_name)
+        return group_config.get("candidate_ids", [])
+    
+    def get_testing_group_overrides(self, group_name: str = None) -> Dict[str, Any]:
+        """Get the override settings for a testing group."""
+        group_config = self.get_testing_group_config(group_name)
+        return group_config.get("override_settings", {})
+    
+    def apply_testing_group_overrides(self, group_name: str = None) -> None:
+        """Apply testing group overrides to the current configuration."""
+        if not self.is_testing_groups_enabled():
+            return
+            
+        overrides = self.get_testing_group_overrides(group_name)
+        if not overrides:
+            return
+            
+        # Apply overrides to simulation config
+        if "simulation" not in self.config:
+            self.config["simulation"] = {}
+            
+        for key, value in overrides.items():
+            if key == "supermajority_threshold":
+                # Apply to voting config
+                if "voting" not in self.config["simulation"]:
+                    self.config["simulation"]["voting"] = {}
+                self.config["simulation"]["voting"]["supermajority_threshold"] = value
+            else:
+                # Apply to simulation config
+                self.config["simulation"][key] = value
+    
+    # Enhanced simulation methods with testing group support
+    def get_num_cardinals(self) -> int:
+        """Get the number of cardinals to include in simulation."""
+        if self.is_testing_groups_enabled():
+            group_config = self.get_testing_group_config()
+            return group_config.get("total_cardinals", 5)
+        return self.get_simulation_config().get("num_cardinals", 5)
+    
+    def get_supermajority_threshold(self) -> float:
+        """Get the supermajority threshold for elections."""
+        if self.is_testing_groups_enabled():
+            overrides = self.get_testing_group_overrides()
+            if "supermajority_threshold" in overrides:
+                return overrides["supermajority_threshold"]
+        return self.get_simulation_config().get("voting", {}).get("supermajority_threshold", 0.667)
+    
 # Global configuration instance
 _config_manager = None
 

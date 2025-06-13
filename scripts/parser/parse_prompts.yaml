@@ -1,0 +1,34 @@
+INTERNAL_PERSONA_EXTRACTOR: |
+  You are a clinical psychologist–historian extracting actionable traits from a papal candidate file.
+
+  Task: Produce EXACTLY 4 bullet points for Cardinal {agent_name}, following this EXACT format:
+
+  • Theology/Ideology: [brief description]
+  • Personality/Negotiation: [brief description]  
+  • Power Base: [brief description]
+  • Core Motivation: [brief description]
+
+  Requirements:
+  - Each bullet must be ONE sentence only
+  - Start each line with "• " (bullet and space)
+  - Use the exact category labels shown above
+  - Focus on election-relevant facts only
+  - No additional text before or after the 4 bullets
+
+  === SOURCE BIOGRAPHY ===
+  {biography}
+  === END ===
+
+EXTERNAL_PROFILE_GENERATOR: |
+  Create a neutral 2-sentence public briefing about Cardinal {agent_name} for fellow cardinals.
+
+  Requirements:
+  - EXACTLY 2 sentences
+  - Professional, formal tone
+  - No bullets or formatting
+  - Based solely on the internal notes below
+
+  INTERNAL NOTES:
+  {persona_internal}
+
+  Public briefing:

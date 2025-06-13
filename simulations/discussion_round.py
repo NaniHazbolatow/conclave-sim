@@ -57,23 +57,8 @@ def main():
         # Create the environment
         env = ConclaveEnv()
 
-        # Read cardinals from CSV file (now relative to project root)
-        cardinals_df = pd.read_csv('data/cardinal_electors_2025.csv')
-
-        # Create Agent instances and add them to env.agents (using config for number of cardinals)
-        for idx, row in cardinals_df.head(num_cardinals).iterrows():
-            agent = Agent(
-                agent_id=row['Cardinal_ID'],  # Use the Cardinal_ID from CSV instead of DataFrame index
-                name=row['Name'],
-                background=row['Background'],
-                env=env
-            )
-            env.agents.append(agent)
-
-        # Set the number of agents in the environment
-        env.freeze_agent_count()  # Freeze count after loading all agents
-        logger.info(f"Loaded {env.num_agents} cardinals for the simulation")
-        logger.info(f"\n{env.list_candidates_for_prompt(randomize=False)}")
+        # Load agents based on testing groups configuration
+        env.load_agents_from_config()
 
         # Generate initial internal stances for all agents before starting
         env.generate_initial_stances()
