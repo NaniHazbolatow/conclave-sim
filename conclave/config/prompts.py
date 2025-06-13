@@ -81,29 +81,38 @@ class PromptManager:
         variables = {}
 
         # Generate agent-specific variables
-        if self.variable_generator and agent_id is not None:
-            try:
-                agent_vars = self.variable_generator.generate_agent_variables(agent_id, prompt_name=prompt_name)
-                variables.update(agent_vars)
-            except Exception as e:
-                logger.warning(f"Error generating agent variables for agent {agent_id} for prompt '{prompt_name}': {e}")
-                # Fallback attempt will be handled by the main try/except block below if a KeyError occurs
+        if agent_id is not None and self.variable_generator is not None:
+            agent_vars = self.variable_generator.generate_agent_variables(agent_id, prompt_name)
+            variables.update(agent_vars)
 
-        # Generate group-specific variables (e.g., for discussion prompts)
-        if self.variable_generator and (prompt_name.startswith("discussion_") or prompt_name == "discussion"):
-            if self.env and hasattr(self.env, '_current_discussion_speakers'):
-                participant_ids = getattr(self.env, '_current_discussion_speakers', None)
-                if participant_ids: 
-                    try:
-                        group_vars = self.variable_generator.generate_group_variables(participant_ids=participant_ids)
-                        variables.update(group_vars)
-                    except Exception as e:
-                        logger.warning(f"Error generating group variables for prompt '{prompt_name}' with participants {participant_ids}: {e}")
-                else:
-                    logger.warning(f"'_current_discussion_speakers' is empty or None for prompt '{prompt_name}'. Cannot generate group variables.")
-            else:
-                logger.warning(f"Environment 'env' or attribute '_current_discussion_speakers' not available for prompt '{prompt_name}'. Cannot generate group variables.")
+        # Generate group-specific variables if applicable
+        # Check if participant_ids are passed directly in extra_vars first
+        participant_ids = extra_vars.get('participant_ids')
+
+        if participant_ids is None and self.env is not None and hasattr(self.env, '_current_discussion_speakers') and self.env._current_discussion_speakers:
+            # Fallback to _current_discussion_speakers if not in extra_vars
+            participant_ids = list(self.env._current_discussion_speakers) # Ensure it's a list
         
+        if participant_ids and self.variable_generator:
+            try:
+                # Ensure participant_ids is a list of integers
+                if not all(isinstance(pid, int) for pid in participant_ids):
+                    logger.warning(f"Participant IDs for prompt '{prompt_name}' are not all integers: {participant_ids}. Attempting conversion.")
+                    try:
+                        participant_ids = [int(pid) for pid in participant_ids]
+                    except ValueError as ve:
+                        logger.error(f"Failed to convert participant IDs to integers for prompt '{prompt_name}': {ve}. Skipping group variable generation.")
+                        participant_ids = None # Prevent further processing with invalid IDs
+
+                if participant_ids: # Proceed if participant_ids are valid
+                    group_vars = self.variable_generator.generate_group_variables(participant_ids)
+                    variables.update(group_vars)
+            except Exception as e:
+                logger.warning(f"Error generating group variables for prompt '{prompt_name}' with participants {participant_ids}: {e}")
+        elif prompt_name.startswith("discussion_"):
+            # Log a warning if group_profiles might be expected but participant_ids are missing
+            logger.warning(f"Participant IDs not available for prompt '{prompt_name}'. Group variables (like group_profiles) will be missing.")
+
         variables.update(extra_vars) # Allow extra_vars to override any generated variables
         
         try:

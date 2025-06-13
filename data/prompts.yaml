@@ -74,7 +74,7 @@ discussion_elector: |
 
   Discussion participants: {group_profiles}  
   Latest tally & momentum: {compact_scoreboard} (2⁄3 = {threshold})  
-  Leading names: {visible_candidates}
+  Leading papabili: {visible_candidates}
 
   You are **Cardinal {agent_name}**, an elector.  
   Identity tag: {persona_tag}

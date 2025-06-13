@@ -103,12 +103,12 @@ class PromptVariableGenerator:
         visible_candidate_agents = self.get_visible_candidates() # List of agent objects
 
         if not self.env.votingHistory:
-            # No votes cast yet
+            # No votes cast yet, so don't show vote count or momentum
             for agent in visible_candidate_agents:
                 name = agent.name
                 cardinal_id_str = f"Cardinal {agent.cardinal_id or 'ID N/A'} - " if include_cardinal_id else ""
                 profile_blurb = agent.profile_blurb or 'Blurb N/A'
-                lines.append(f"{cardinal_id_str}{name} – {profile_blurb}, 0 votes (stable)")
+                lines.append(f"{cardinal_id_str}{name} – {profile_blurb}")
             return "\\\\n".join(lines)
 
         current_votes_map = self.env.votingHistory[-1]
@@ -146,16 +146,28 @@ class PromptVariableGenerator:
 
     def generate_group_profiles(self, participant_ids: List[int]) -> str:
         """Generate group_profiles variable as defined in glossary."""
+        if not participant_ids:
+            self.logger.info("generate_group_profiles called with empty participant_ids. Returning default message.")
+            return "No participants currently specified for this discussion."
+
         profiles = []
         for pid in participant_ids:
-            if pid >= len(self.env.agents):
+            if not isinstance(pid, int) or pid < 0 or pid >= len(self.env.agents):
+                self.logger.warning(f"Invalid participant ID {pid} (type: {type(pid)}, value: {pid}). Max agent index: {len(self.env.agents)-1 if self.env.agents else 'N/A'}). Skipping.")
                 continue
+            
             agent = self.env.agents[pid]
             name = agent.name
-            profile_blurb = getattr(agent, 'profile_blurb', 'Blurb not available')
-            # Relation is an empty string for now, represented by ()
-            profiles.append(f"• {name} – {profile_blurb} ()")
-        return "\\n".join(profiles)
+            persona_tag = getattr(agent, 'persona_tag', 'Tag N/A') # Using 'Tag N/A' for clarity
+            
+            # Changed format to be more explicit about the tag and removed "()"
+            profiles.append(f"• {name} – Tag: {persona_tag}") 
+
+        if not profiles:
+            self.logger.info("generate_group_profiles found no valid participants from the provided IDs. Returning default message.")
+            return "No valid participants found from the provided IDs for this discussion."
+            
+        return "\\\\n".join(profiles)
 
     def generate_relation_for_participant(self, participant_id: int, all_participants: List[int]) -> str:
         """Generate relation label for a participant (sympathetic, neutral, opposed)."""

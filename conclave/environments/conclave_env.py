@@ -367,10 +367,96 @@ class ConclaveEnv:
         
         return [g for g in groups if g] # Filter out any empty groups
 
+    def _process_discussion_group(self, group_agent_ids: list[int], group_num: int, total_groups: int, display_voting_round: int) -> tuple[list[dict], list[str]]:
+        """
+        Processes a single discussion group sequentially.
+        Agents within the group speak one after another.
+        Collects console output lines related to this group and their comments.
+        """
+        group_speakers = [self.agents[agent_id] for agent_id in group_agent_ids]
+        output_lines: list[str] = []
+        
+        if not group_speakers:
+            logger.info(f"Voting Round {display_voting_round}, Discussion Group {group_num}/{total_groups}: No speakers in this group.")
+            return [], output_lines
+
+        speaker_names = [agent.name for agent in group_speakers]
+        logger.info(
+            f"Voting Round {display_voting_round}, Discussion Group {group_num}/{total_groups} now speaking. "
+            f"Participants: {', '.join(speaker_names)}"
+        )
+        
+        output_lines.append(
+            f"💬 Voting Round {display_voting_round}, Discussion Group {group_num}/{total_groups} "
+            f"({len(group_speakers)} speakers):"
+        )
+        output_lines.append("─" * 80)
+
+        comments_from_this_group = []
+        for agent in group_speakers: # Sequential discussion within the group
+            try:
+                comment_data = agent.discuss()
+
+                if isinstance(comment_data, dict) and 'agent_id' in comment_data and 'message' in comment_data:
+                    # Ensure agent_id from comment_data matches the current agent if possible, or trust comment_data
+                    # For simplicity, we'll use agent_id from comment_data if it's the speaking agent.
+                    # A mismatch could indicate an issue in agent.discuss()
+                    if comment_data['agent_id'] != agent.agent_id:
+                        logger.warning(f"Mismatch in agent_id from discuss() for {agent.name}. Expected {agent.agent_id}, got {comment_data['agent_id']}.")
+                    
+                    actual_agent_id = comment_data['agent_id'] # Use ID from comment
+                    agent_name_from_comment = self.agents[actual_agent_id].name if actual_agent_id < len(self.agents) else f"Agent {actual_agent_id}"
+
+                    message_content = comment_data['message']
+                    
+                    if not isinstance(message_content, str):
+                        logger.warning(f"Agent {agent_name_from_comment} produced non-string message content: {type(message_content)}. Converting to string.")
+                        message_content = str(message_content)
+
+                    if not message_content.strip(): # Handle empty or whitespace-only messages
+                         logger.warning(f"Agent {agent_name_from_comment} produced an empty or whitespace-only message.")
+                         message_content = "[Agent produced no substantive message]"
+                    elif message_content.startswith("(Discussion error:"): # Check if the message itself is an error from agent
+                        logger.warning(f"Agent {agent_name_from_comment} reported an error within its speech: {message_content}")
+
+                    output_lines.append(f"🔸 {agent_name_from_comment}:")
+                    output_lines.append(message_content)
+                    output_lines.append("\n")
+                    comments_from_this_group.append(comment_data)
+
+                elif comment_data: # agent.discuss() returned something, but not the expected dict format
+                    logger.error(f"Agent {agent.name} (ID: {agent.agent_id}) discuss() method returned unexpected data format. Type: {type(comment_data)}, Data: {str(comment_data)[:200]}")
+                    output_lines.append(f"🔸 {agent.name}:")
+                    output_lines.append(f"[System Error: Agent {agent.name} failed to produce a valid discussion message due to unexpected data format.]")
+                    comments_from_this_group.append({'agent_id': agent.agent_id, 'message': '[Agent speech malformed]', 'error': True, 'raw_data': str(comment_data)[:200]})
+                else: # agent.discuss() returned None or empty (which is falsy)
+                    logger.info(f"Agent {agent.name} (ID: {agent.agent_id}) did not produce any comment (discuss() returned None or empty).")
+                    output_lines.append(f"🔸 {agent.name}:")
+                    output_lines.append("[Agent chose not to speak or produced no message.]")
+                    # Optionally, add a placeholder to comments_from_this_group if needed for history
+                    # comments_from_this_group.append({'agent_id': agent.agent_id, 'message': '[No comment]', 'no_comment': True})
+
+            except Exception as e:
+                logger.error(f"Critical exception during discussion processing for agent {agent.name} (ID: {agent.agent_id}): {e}", exc_info=True)
+                output_lines.append(f"🔸 {agent.name}:")
+                output_lines.append(f"[System Error: A critical error occurred while processing discussion for {agent.name}. See logs.]")
+                # Add an error placeholder to the history
+                comments_from_this_group.append({
+                    'agent_id': agent.agent_id,
+                    'message': f"[System Error processing speech: {e}]",
+                    'error': True,
+                    'exception_type': type(e).__name__
+                })
+            
+        output_lines.append("─" * 80) # End of group discussion
+        return comments_from_this_group, output_lines
+
     def run_discussion_round(self) -> None:
         """
         Run a discussion round where agents speak in assigned groups.
-        All agents will have a chance to speak if assigned to a group.
+        Discussion groups are processed in parallel for their internal logic.
+        Console output for each group is printed sequentially and atomically.
+        Speeches within each group occur sequentially.
         Internal stances are updated for all agents after all groups have spoken.
         """
         self.discussionRound += 1
@@ -379,66 +465,58 @@ class ConclaveEnv:
 
         if not discussion_groups:
             logger.info(f"No discussion groups to run for discussion round {self.discussionRound}.")
-            self.update_internal_stances() # Update stances even if no discussion occurred
+            logger.info(f"Updating internal stances for all agents as no discussion took place in phase {self.discussionRound}.")
+            self.update_internal_stances() 
             return
 
         all_round_comments = [] 
         total_groups = len(discussion_groups)
         
-        # Use self.votingRound for display as per user example "Voting Round 1 Discussion Group 2/6"
-        # If votingRound is 0 (e.g. before first vote), this will show "Voting Round 0".
-        # Consider if votingRound should be at least 1 for this display, or adjust display logic.
-        # Assuming self.votingRound is correctly reflecting the current main election cycle.
         display_voting_round = self.votingRound if self.votingRound > 0 else 1
 
+        logger.info(f"Starting Discussion Phase {self.discussionRound} (part of Voting Round {display_voting_round}) with {total_groups} discussion groups processed in parallel.")
 
-        logger.info(f"Starting Discussion Phase {self.discussionRound} (part of Voting Round {display_voting_round}) with {total_groups} discussion groups.")
+        futures = []
+        max_group_workers = min(8, total_groups) if total_groups > 0 else 1
 
-        for i, group_agent_ids in enumerate(discussion_groups):
-            current_group_num = i + 1
-            group_speakers = [self.agents[agent_id] for agent_id in group_agent_ids]
-            
-            if not group_speakers:
-                logger.info(f"Voting Round {display_voting_round}, Discussion Group {current_group_num}/{total_groups}: No speakers in this group.")
-                continue
+        with ThreadPoolExecutor(max_workers=max_group_workers) as executor:
+            for i, group_agent_ids in enumerate(discussion_groups):
+                current_group_num = i + 1
+                if not group_agent_ids: 
+                    logger.warning(f"Skipping empty group {current_group_num}/{total_groups}")
+                    continue
+                
+                futures.append(executor.submit(
+                    self._process_discussion_group,
+                    group_agent_ids,
+                    current_group_num,
+                    total_groups,
+                    display_voting_round
+                ))
 
-            speaker_names = [agent.name for agent in group_speakers]
-            logger.info(
-                f"Voting Round {display_voting_round}, Discussion Group {current_group_num}/{total_groups} speaking. "
-                f"Participants: {', '.join(speaker_names)}"
-            )
-            print(
-                f"💬 Voting Round {display_voting_round}, Discussion Group {current_group_num}/{total_groups} "
-                f"({len(group_speakers)} speakers):"
-            )
-            print("─" * 80)
-
-            group_comments_this_sub_round = []
-            futures = []
-            with ThreadPoolExecutor(max_workers=min(8, len(group_speakers))) as executor:
-                for agent in group_speakers:
-                    futures.append(executor.submit(agent.discuss))
-
-                for future in tqdm(futures, desc=f"VR {display_voting_round} DG {current_group_num}/{total_groups}", total=len(futures), disable=True):
-                    result = future.result()
-                    if result:
-                        group_comments_this_sub_round.append(result)
-                        all_round_comments.append(result)
-
-            for comment in group_comments_this_sub_round:
-                agent_name = self.agents[comment['agent_id']].name
-                message = comment['message']
-                print(f"🔸 {agent_name}:")
-                print(f"{message}")
-            print("─" * 80)
+            # Collect results and print output sequentially per group
+            for future in tqdm(futures, desc=f"Processing Discussion Groups (VR {display_voting_round}, DP {self.discussionRound})", total=len(futures), disable=True):
+                try:
+                    group_comments, group_output_lines = future.result()
+                    
+                    # Print all collected output lines for this group at once
+                    for line in group_output_lines:
+                        print(line)
+                    
+                    if group_comments:
+                        all_round_comments.extend(group_comments)
+                except Exception as e:
+                    logger.error(f"Error processing a discussion group: {e}", exc_info=True)
             
         if all_round_comments:
             self.discussionHistory.append(all_round_comments)
+            # Track participation
             participating_agent_ids_this_round = list(set([comment['agent_id'] for comment in all_round_comments]))
             for agent_id in participating_agent_ids_this_round:
                 if agent_id not in self.agent_discussion_participation:
                     self.agent_discussion_participation[agent_id] = []
-                self.agent_discussion_participation[agent_id].append(self.discussionRound - 1) 
+                # Store the actual discussionRound number (1-indexed)
+                self.agent_discussion_participation[agent_id].append(self.discussionRound) 
 
         logger.info(f"Discussion Phase {self.discussionRound} (Voting Round {display_voting_round}) completed with {len(all_round_comments)} total comments from {total_groups} groups.")
         
