@@ -44,14 +44,14 @@ def main():
     try:
         # Load configuration
         config = get_config()
-        num_cardinals = config.get_num_cardinals()
-        max_speakers_per_round = config.get_max_speakers_per_round()
-        num_discussions = config.get_num_discussions()
+        num_cardinals = config.get_num_cardinals() # Still relevant for overall setup
+        # REMOVED: max_speakers_per_round = config.get_max_speakers_per_round()
+        # REMOVED: num_discussions = config.get_num_discussions()
+        discussion_group_size = config.get_discussion_group_size() # New relevant config
         max_election_rounds = config.get_max_election_rounds()
         
         logger.info(f"Starting simulation with num_cardinals={num_cardinals}, "
-                   f"max_speakers_per_round={max_speakers_per_round}, "
-                   f"num_discussions={num_discussions}, "
+                   f"discussion_group_size={discussion_group_size}, " # Updated log
                    f"max_election_rounds={max_election_rounds}")
         
         # Create the environment
@@ -70,16 +70,16 @@ def main():
             election_round += 1
             logger.info(f"\n=== ELECTION ROUND {election_round} ===")
             
-            # Reset discussion speakers for the new election round
-            env.reset_discussion_speakers_for_new_election_round()
+            # REMOVED: env.reset_discussion_speakers_for_new_election_round()
             
-            # Run the configured number of discussions
-            for discussion_num in range(1, num_discussions + 1):
-                logger.info(f"\n--- Discussion Cycle {discussion_num} ---")
-                # Run a discussion round with configured number of speakers
-                env.run_discussion_round(num_speakers=max_speakers_per_round)
-                # Update stances after each discussion
-                env.update_internal_stances()
+            # Run a full discussion phase (which now handles groups internally)
+            # The number of discussion *cycles* (previously num_discussions) is now implicitly 1 full pass of all groups.
+            # If you need multiple full discussion phases before a vote, this loop structure would need adjustment.
+            # For now, assuming one full discussion phase (all groups speak once) per election round.
+            logger.info(f"\n--- Discussion Phase (Voting Round {election_round}) ---")
+            env.run_discussion_round() # No num_speakers argument needed
+            # Stance updates are now handled within run_discussion_round after all groups have spoken.
+            # REMOVED: env.update_internal_stances() 
             
             # After all discussions, run voting
             winner_found = env.run_voting_round()

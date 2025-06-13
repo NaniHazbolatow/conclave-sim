@@ -113,8 +113,7 @@ testing_groups:
       progressive: [224, 251] # Tagle, Zuppi
     override_settings:
       num_cardinals: 5
-      max_speakers_per_round: 5
-      num_discussions: 1
+      discussion_group_size: 3 # Example: smaller groups for a small set of cardinals
       max_election_rounds: 8
       supermajority_threshold: 0.6  # Lower threshold for small group (3/5 = 60%)
   
@@ -132,8 +131,7 @@ testing_groups:
       progressive: [224, 251, 78, 23, 6, 136, 187] # Tagle, Zuppi, Farrell, Battaglia, Ambongo, Marx, Ranjith
     override_settings:
       num_cardinals: 15
-      max_speakers_per_round: 5
-      num_discussions: 3
+      discussion_group_size: 4 # Example: slightly larger groups
       max_election_rounds: 6
       supermajority_threshold: 0.667  # Standard 2/3 threshold (10/15)
   
@@ -151,8 +149,7 @@ testing_groups:
       progressive: [224, 251, 78, 23, 6, 136, 187, 13, 173, 91] # Tagle, Zuppi, Farrell, Battaglia, Ambongo, Marx, Ranjith, Aveline, Poola, Goh
     override_settings:
       num_cardinals: 25
-      max_speakers_per_round: 8
-      num_discussions: 3
+      discussion_group_size: 5 # Example: larger groups for more cardinals
       max_election_rounds: 10
       supermajority_threshold: 0.667  # Standard 2/3 threshold (17/25)
 
@@ -169,10 +166,8 @@ simulation:
   num_cardinals: 5          # Number of cardinals to include in simulation (from CSV head)
   
   # Discussion structure
-  max_speakers_per_round: 5     # Maximum cardinals who can speak per round
-  num_discussions: 1        # Number of complete discussion cycles to run per election round
+  discussion_group_size: 3    # Number of agents per discussion group.
   max_election_rounds: 5    # Maximum number of full election rounds before stopping (no winner required)
-  randomize_speaking_order: true  # Whether to randomize the order of speakers in discussion rounds
   discussion_length:
     min_words: 50          # Minimum word count for discussion contributions
     max_words: 100          # Maximum word count for discussion contributions

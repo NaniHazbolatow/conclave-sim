@@ -19,23 +19,32 @@ class PromptVariableGenerator:
         self.env = env
         self.logger = logging.getLogger(self.__class__.__name__)
     
-    def generate_agent_variables(self, agent_id: int) -> Dict[str, Any]:
+    def generate_agent_variables(self, agent_id: int, prompt_name: str) -> Dict[str, Any]: # Added prompt_name
         """Generate all agent-specific variables for prompts."""
         agent = self.env.agents[agent_id]
+        
+        # Determine if Cardinal ID should be included in visible_candidates
+        # Show IDs for internal stance and voting, not for discussions.
+        # Assuming voting prompts might also use 'visible_candidates' or a similar setup.
+        # For now, being explicit: show ID unless it's a discussion prompt.
+        include_id_for_visible_candidates = prompt_name not in ["discussion_elector", "discussion_candidate"]
+        
         variables = {
             'agent_name': agent.name,
-            'cardinal_id': getattr(agent, 'cardinal_id', agent_id),
+            'cardinal_id': agent.cardinal_id, 
             'role_tag': getattr(agent, 'role_tag', 'ELECTOR'),
             'biography': agent.background,
-            'persona_internal': getattr(agent, 'persona_internal', ''),
-            'profile_public': getattr(agent, 'profile_public', ''),
+            'persona_internal': agent.internal_persona,
+            'profile_public': agent.public_profile,
+            'persona_tag': agent.persona_tag or 'N/A',
+            'profile_blurb': agent.profile_blurb or 'N/A',
             'discussion_round': self.env.discussionRound,
             'voting_round': self.env.votingRound,
             'threshold': self.env._calculate_voting_threshold(),
             'compact_scoreboard': self.generate_compact_scoreboard(),
-            'visible_candidates': self.generate_visible_candidates(),
-            'visible_candidates_ids': self.generate_visible_candidate_ids(),
-            'candidate_id_mapping': self.generate_candidate_id_mapping(),
+            'visible_candidates': self.generate_visible_candidates(include_cardinal_id=include_id_for_visible_candidates), 
+            'visible_candidates_ids': self.generate_visible_candidate_ids(), # Restored
+            'candidate_id_mapping': self.generate_candidate_id_mapping(), # Restored
             'stance_digest': self.generate_stance_digest(agent_id),
             'reflection_digest': self.generate_reflection_digest(agent_id),
             'recent_speech_snippets': self.generate_recent_speech_snippets(agent_id),
@@ -88,15 +97,47 @@ class PromptVariableGenerator:
                 scoreboard_items.append(f"{candidate_name}:{votes}")
         return "; ".join(scoreboard_items)
 
-    def generate_visible_candidates(self) -> str:
-        """Generate visible_candidates variable with names and external personas."""
+    def generate_visible_candidates(self, include_cardinal_id: bool) -> str: # Added include_cardinal_id flag
+        """Generate visible_candidates variable with names, (optional) Cardinal IDs, profile blurbs, votes, and momentum."""
         lines = []
-        for agent in self.get_visible_candidates():
-            cardinal_id = getattr(agent, 'cardinal_id', getattr(agent, 'agent_id', '?'))
+        visible_candidate_agents = self.get_visible_candidates() # List of agent objects
+
+        if not self.env.votingHistory:
+            # No votes cast yet
+            for agent in visible_candidate_agents:
+                name = agent.name
+                cardinal_id_str = f"Cardinal {agent.cardinal_id or 'ID N/A'} - " if include_cardinal_id else ""
+                profile_blurb = agent.profile_blurb or 'Blurb N/A'
+                lines.append(f"{cardinal_id_str}{name} – {profile_blurb}, 0 votes (stable)")
+            return "\\\\n".join(lines)
+
+        current_votes_map = self.env.votingHistory[-1]
+        previous_votes_map = self.env.votingHistory[-2] if len(self.env.votingHistory) > 1 else {}
+
+        for agent in visible_candidate_agents:
             name = agent.name
-            profile = getattr(agent, 'profile_public', 'Profile not available')
-            lines.append(f"Cardinal {cardinal_id} ({name}): {profile}")
-        return "\n".join(lines)
+            agent_id_key = agent.agent_id
+            cardinal_id_str = f"Cardinal {agent.cardinal_id or 'ID N/A'} - " if include_cardinal_id else ""
+            profile_blurb = agent.profile_blurb or 'Blurb N/A'
+            
+            current_agent_votes = current_votes_map.get(agent_id_key, 0)
+            
+            momentum_status = "stable"
+            if not previous_votes_map: 
+                if current_agent_votes > 0:
+                    momentum_status = "gaining"
+            else:
+                previous_agent_votes = previous_votes_map.get(agent_id_key, 0)
+                delta = current_agent_votes - previous_agent_votes
+                if delta >= 2:
+                    momentum_status = "gaining"
+                elif delta <= -2:
+                    momentum_status = "losing"
+                elif current_agent_votes == 0 and previous_agent_votes > 0:
+                    momentum_status = "dropped"
+
+            lines.append(f"{cardinal_id_str}{name} – {profile_blurb}, {current_agent_votes} votes ({momentum_status})")
+        return "\\\\n".join(lines)
 
     def generate_stance_digest(self, agent_id: int) -> str:
         """Generate stance_digest variable as defined in glossary."""
@@ -111,10 +152,10 @@ class PromptVariableGenerator:
                 continue
             agent = self.env.agents[pid]
             name = agent.name
-            profile_public = getattr(agent, 'profile_public', 'Profile not available')
-            relation = self.generate_relation_for_participant(pid, participant_ids)
-            profiles.append(f"{name} – {profile_public} ({relation})")
-        return "\n".join(profiles)
+            profile_blurb = getattr(agent, 'profile_blurb', 'Blurb not available')
+            # Relation is an empty string for now, represented by ()
+            profiles.append(f"• {name} – {profile_blurb} ()")
+        return "\\n".join(profiles)
 
     def generate_relation_for_participant(self, participant_id: int, all_participants: List[int]) -> str:
         """Generate relation label for a participant (sympathetic, neutral, opposed)."""
@@ -167,7 +208,8 @@ class PromptVariableGenerator:
         """Generate reflection_digest variable as defined in glossary."""
         agent = self.env.agents[agent_id]
         if self.env.discussionRound == 0:
-            return ""
+            # return "" # Return a more informative default for initial stance
+            return "Initial assessment of the conclave situation and potential candidates."
         stance = getattr(agent, 'internal_stance', None)
         if not stance:
             return "Analyzing current situation and candidate options."
@@ -179,14 +221,14 @@ class PromptVariableGenerator:
         """Generate list of Cardinal IDs for voting (JSON format)."""
         return json.dumps(self.get_visible_candidates_cardinal_ids())
 
-    def generate_candidate_id_mapping(self) -> str:
-        """Generate candidate ID mapping for voting prompts."""
-        lines = []
-        for agent in self.get_visible_candidates():
-            cardinal_id = getattr(agent, 'cardinal_id', getattr(agent, 'agent_id', '?'))
-            name = agent.name
-            lines.append(f"Cardinal {cardinal_id}: {name}")
-        return "\n".join(lines)
+    def generate_candidate_id_mapping(self) -> str: # Restored
+        """Generate candidate ID mapping for voting prompts.""" # Restored
+        lines = [] # Restored
+        for agent in self.get_visible_candidates(): # Restored
+            cardinal_id = getattr(agent, 'cardinal_id', getattr(agent, 'agent_id', '?')) # Restored
+            name = agent.name # Restored
+            lines.append(f"Cardinal {cardinal_id}: {name}") # Restored
+        return "\\n".join(lines) # Restored
 
     def get_visible_candidates(self) -> list:
         """Get list of visible candidate agent objects."""

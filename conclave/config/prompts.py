@@ -83,7 +83,7 @@ class PromptManager:
         # Generate agent-specific variables
         if self.variable_generator and agent_id is not None:
             try:
-                agent_vars = self.variable_generator.generate_agent_variables(agent_id)
+                agent_vars = self.variable_generator.generate_agent_variables(agent_id, prompt_name=prompt_name)
                 variables.update(agent_vars)
             except Exception as e:
                 logger.warning(f"Error generating agent variables for agent {agent_id} for prompt '{prompt_name}': {e}")
@@ -192,8 +192,7 @@ class PromptManager:
             variables.setdefault('persona_internal', 'Cardinal profile')
             variables.setdefault('stance_digest', 'Initial stance')
             variables.setdefault('compact_scoreboard', 'No voting history yet')
-            variables.setdefault('visible_candidates_ids', '[0, 1, 2, 3, 4]')
-            variables.setdefault('candidate_id_mapping', 'Cardinal 0: Agent 0\nCardinal 1: Agent 1')
+            variables.setdefault('candidate_id_mapping', 'Cardinal 0: Agent 0\\nCardinal 1: Agent 1')
             
         elif template_name.startswith('discussion_'):
             variables.setdefault('persona_internal', 'Cardinal profile')
@@ -208,7 +207,6 @@ class PromptManager:
             variables.setdefault('compact_scoreboard', 'No voting history yet')
             variables.setdefault('reflection_digest', 'Initial stance formation')
             variables.setdefault('visible_candidates', 'All cardinals are candidates')
-            variables.setdefault('visible_candidates_ids', '[0, 1, 2, 3, 4]')
     
 
     def reload_prompts(self):

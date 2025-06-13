@@ -26,8 +26,7 @@ class ConclaveEnv:
         self.agent_discussion_participation = {}
         # Track which agents voted in each round
         self.voting_participation = {}
-        # Track which agents have already spoken in the current election round
-        self.agents_spoken_in_current_election = set()
+        # REMOVED: self.agents_spoken_in_current_election = set()
         
         # Get configuration for simulation parameters
         self.config = get_config()
@@ -106,14 +105,8 @@ class ConclaveEnv:
         # Import here to avoid circular imports
         from ..agents.base import Agent
         
-        # Read cardinals from CSV file
-        cardinals_df = pd.read_csv('data/cardinal_electors_2025.csv')
-        
-        # Read persona data from separate CSV file
-        personas_df = pd.read_csv('data/cardinal_electors_personas.csv')
-        
-        # Merge the dataframes on Cardinal_ID to get both background and persona data
-        merged_df = cardinals_df.merge(personas_df, on='Cardinal_ID', how='left', suffixes=('', '_persona'))
+        # Read cardinals from the master CSV file
+        master_df = pd.read_csv('data/cardinals_master_data.csv')
         
         if self.testing_groups_enabled:
             # Get the cardinal IDs for the current testing group
@@ -121,33 +114,32 @@ class ConclaveEnv:
             logger.info(f"Loading testing group with {len(cardinal_ids)} cardinals")
             
             # Filter dataframe to only include cardinals in the testing group
-            merged_df = merged_df[merged_df['Cardinal_ID'].isin(cardinal_ids)]
+            master_df = master_df[master_df['Cardinal_ID'].isin(cardinal_ids)]
             
-            if len(merged_df) != len(cardinal_ids):
-                loaded_ids = set(merged_df['Cardinal_ID'].tolist())
+            if len(master_df) != len(cardinal_ids):
+                loaded_ids = set(master_df['Cardinal_ID'].tolist())
                 missing_ids = set(cardinal_ids) - loaded_ids
                 logger.warning(f"Some cardinal IDs not found in CSV: {missing_ids}")
         else:
             # In normal mode, optionally limit number of cardinals based on config
             num_cardinals = self.config.get_num_cardinals()
-            if num_cardinals and num_cardinals < len(merged_df):
-                merged_df = merged_df.head(num_cardinals)
+            if num_cardinals and num_cardinals < len(master_df):
+                master_df = master_df.head(num_cardinals)
                 logger.info(f"Loading first {num_cardinals} cardinals from CSV")
         
         # Create Agent instances and add them to env.agents
-        for list_index, (idx, row) in enumerate(merged_df.iterrows()):
+        for list_index, (idx, row) in enumerate(master_df.iterrows()):
             agent = Agent(
                 agent_id=list_index,  # Use list index as agent_id for consistent indexing
                 name=row['Name'],
                 background=row['Background'],
-                env=self
+                env=self,
+                cardinal_id=row['Cardinal_ID'],
+                internal_persona=row.get('Internal_Persona', ''),
+                public_profile=row.get('Public_Profile', ''),
+                profile_blurb=row.get('Profile_Blurb', ''),
+                persona_tag=row.get('Persona_Tag', '')
             )
-            # Store the original Cardinal_ID for reference
-            agent.cardinal_id = row['Cardinal_ID']
-            
-            # Store persona data
-            agent.persona_internal = row.get('Internal_Persona', '')
-            agent.profile_public = row.get('External_Persona', '')
             
             self.agents.append(agent)
         
@@ -155,7 +147,7 @@ class ConclaveEnv:
         if self.testing_groups_enabled:
             original_candidate_ids = self.config.get_testing_group_candidate_ids()
             # Map Cardinal_IDs to list indices
-            cardinal_id_to_index = {row['Cardinal_ID']: idx for idx, (_, row) in enumerate(merged_df.iterrows())}
+            cardinal_id_to_index = {row['Cardinal_ID']: idx for idx, (_, row) in enumerate(master_df.iterrows())}
             self.candidate_ids = [cardinal_id_to_index[cid] for cid in original_candidate_ids if cid in cardinal_id_to_index]
             logger.info(f"Mapped candidate Cardinal_IDs {original_candidate_ids} to list indices {self.candidate_ids}")
         
@@ -175,10 +167,10 @@ class ConclaveEnv:
         
         logger.info(f"\n{self.list_candidates_for_prompt(randomize=False)}")
     
-    def reset_discussion_speakers_for_new_election_round(self):
-        """Reset the set of agents who have spoken in the current election round."""
-        self.agents_spoken_in_current_election = set()
-        logger.info("Reset discussion speakers for new election round")
+    # REMOVED: def reset_discussion_speakers_for_new_election_round(self):
+    #    """Reset the set of agents who have spoken in the current election round."""
+    #    self.agents_spoken_in_current_election = set()
+    #    logger.info("Reset discussion speakers for new election round")
 
     def cast_vote(self, candidate_id: int, voter_id: int = None) -> None:
         with self.voting_lock:
@@ -338,111 +330,119 @@ class ConclaveEnv:
         self.votingBuffer.clear()
         return False
 
-    def run_discussion_round(self, num_speakers: int = 5) -> None:
+    def _generate_discussion_group_assignments(self) -> list[list[int]]:
         """
-        Run a discussion round where agents can speak about candidates or their own position.
-        Ensures that each cardinal speaks only once per election round across all discussion cycles.
+        Creates randomized discussion groups for a full discussion cycle.
+        Ensures groups have at least 2 agents if possible, by adjusting the last two groups
+        if the last group would have only 1 agent.
+        """
+        discussion_group_size = self.simulation_config.get("discussion_group_size", 3)
+        
+        if discussion_group_size < 2:
+            logger.warning(
+                f"Configured 'discussion_group_size' ({discussion_group_size}) is less than 2. "
+                f"Adjusting to 2 for discussion group formation."
+            )
+            discussion_group_size = 2
 
-        Args:
-            num_speakers: Number of speakers to include in the discussion.
-                          If greater than available agents, all available agents will participate.
+        agent_ids = list(range(len(self.agents)))
+        if not agent_ids:
+            return []
+            
+        random.shuffle(agent_ids)
+
+        groups = []
+        i = 0
+        num_total_agents = len(agent_ids)
+        while i < num_total_agents:
+            groups.append(agent_ids[i : i + discussion_group_size])
+            i += discussion_group_size
+
+        # Adjustment: if the last group has 1 agent and there's more than one group,
+        # move one agent from the second-to-last group to the last group.
+        if len(groups) > 1 and len(groups[-1]) == 1:
+            if len(groups[-2]) > 0: # True if group_size >= 2 for group[-2] formation
+                element_to_move = groups[-2].pop()
+                groups[-1].insert(0, element_to_move)
+        
+        return [g for g in groups if g] # Filter out any empty groups
+
+    def run_discussion_round(self) -> None:
+        """
+        Run a discussion round where agents speak in assigned groups.
+        All agents will have a chance to speak if assigned to a group.
+        Internal stances are updated for all agents after all groups have spoken.
         """
         self.discussionRound += 1
-        round_comments = []
-
-        # Get all agent IDs that haven't spoken yet in this election round
-        all_agent_ids = list(range(len(self.agents)))
-        available_agent_ids = [agent_id for agent_id in all_agent_ids 
-                              if agent_id not in self.agents_spoken_in_current_election]
-
-        # If no agents are available (all have spoken), reset and use all agents
-        if not available_agent_ids:
-            logger.warning(f"All agents have already spoken in this election round. "
-                          f"Resetting speakers to allow participation.")
-            available_agent_ids = all_agent_ids
-            self.agents_spoken_in_current_election.clear()
-
-        # Check if we should randomize speaking order
-        randomize_order = self.config.get_randomize_speaking_order()
         
-        if randomize_order:
-            # Select speakers randomly from available agents
-            logger.info(f"Using random selection for discussion round {self.discussionRound}")
-            # Randomly shuffle the available IDs
-            random.shuffle(available_agent_ids)
-        else:
-            # Use sequential order (agent ID order) from available agents
-            logger.info(f"Using sequential order for discussion round {self.discussionRound}")
+        discussion_groups = self._generate_discussion_group_assignments()
 
-        # Select the specified number of speakers from available agents
-        if num_speakers > len(available_agent_ids):
-            selected_agent_ids = available_agent_ids
-            logger.info(f"Requested {num_speakers} speakers but only {len(available_agent_ids)} available. "
-                       f"Using all available agents.")
-        else:
-            selected_agent_ids = available_agent_ids[:num_speakers]
+        if not discussion_groups:
+            logger.info(f"No discussion groups to run for discussion round {self.discussionRound}.")
+            self.update_internal_stances() # Update stances even if no discussion occurred
+            return
 
-        # Mark these agents as having spoken in this election round
-        self.agents_spoken_in_current_election.update(selected_agent_ids)
-
-        # Store current discussion speakers for reference during the discussion
-        self._current_discussion_speakers = selected_agent_ids
-
-        # Get the corresponding agent objects
-        speakers = [self.agents[agent_id] for agent_id in selected_agent_ids]
-
-        # Log the selection
-        selected_str = "\n".join([
-            f"Cardinal {agent_id} - {self.agents[agent_id].name}"
-            for agent_id in selected_agent_ids
-        ])
-        logger.info(f"Selected speakers for discussion round {self.discussionRound}:\n{selected_str}")
-        logger.info(f"Agents already spoken in this election round: {sorted(self.agents_spoken_in_current_election)}")
-
-        logger.info(f"Starting discussion round {self.discussionRound} with {len(speakers)} speakers")
-
-        # Collect discussions from selected speakers
-        futures = []
-        with ThreadPoolExecutor(max_workers=min(8, len(speakers))) as executor:
-            # Submit the discuss task for each speaker
-            for agent in speakers:
-                futures.append(executor.submit(agent.discuss))
-
-            # Wait for all futures to complete
-            for future in tqdm(futures, desc="Collecting Discussion", total=len(futures), disable=True):
-                result = future.result()  # This blocks until the task completes
-                if result:
-                    round_comments.append(result)
-
-        self.discussionHistory.append(round_comments)
-
-        # Track which agents participated in this discussion round
-        participating_agent_ids = [comment['agent_id'] for comment in round_comments]
-        for agent_id in participating_agent_ids:
-            if agent_id not in self.agent_discussion_participation:
-                self.agent_discussion_participation[agent_id] = []
-            self.agent_discussion_participation[agent_id].append(self.discussionRound - 1)  # -1 because we already incremented
-
-        # Log the discussion
-        discussion_str = "\n\n".join([
-            f"Cardinal {getattr(self.agents[comment['agent_id']], 'cardinal_id', comment['agent_id'])} - {self.agents[comment['agent_id']].name} "
-            f"{comment['message']}"
-            for comment in round_comments
-        ])
-        logger.info(f"Discussion round {self.discussionRound} completed.\n{discussion_str}")
+        all_round_comments = [] 
+        total_groups = len(discussion_groups)
         
-        # Simplified discussion summary for console
-        print(f"\n💬 Discussion Round {self.discussionRound} ({len(round_comments)} speakers):")
-        print("─" * 80)
-        for comment in round_comments:
-            agent_name = self.agents[comment['agent_id']].name
-            # Show full message without truncation
-            message = comment['message']
-            print(f"\n🔸 {agent_name}:")
-            print(f"{message}")
-        print("─" * 80)
+        # Use self.votingRound for display as per user example "Voting Round 1 Discussion Group 2/6"
+        # If votingRound is 0 (e.g. before first vote), this will show "Voting Round 0".
+        # Consider if votingRound should be at least 1 for this display, or adjust display logic.
+        # Assuming self.votingRound is correctly reflecting the current main election cycle.
+        display_voting_round = self.votingRound if self.votingRound > 0 else 1
+
+
+        logger.info(f"Starting Discussion Phase {self.discussionRound} (part of Voting Round {display_voting_round}) with {total_groups} discussion groups.")
+
+        for i, group_agent_ids in enumerate(discussion_groups):
+            current_group_num = i + 1
+            group_speakers = [self.agents[agent_id] for agent_id in group_agent_ids]
+            
+            if not group_speakers:
+                logger.info(f"Voting Round {display_voting_round}, Discussion Group {current_group_num}/{total_groups}: No speakers in this group.")
+                continue
+
+            speaker_names = [agent.name for agent in group_speakers]
+            logger.info(
+                f"Voting Round {display_voting_round}, Discussion Group {current_group_num}/{total_groups} speaking. "
+                f"Participants: {', '.join(speaker_names)}"
+            )
+            print(
+                f"💬 Voting Round {display_voting_round}, Discussion Group {current_group_num}/{total_groups} "
+                f"({len(group_speakers)} speakers):"
+            )
+            print("─" * 80)
+
+            group_comments_this_sub_round = []
+            futures = []
+            with ThreadPoolExecutor(max_workers=min(8, len(group_speakers))) as executor:
+                for agent in group_speakers:
+                    futures.append(executor.submit(agent.discuss))
+
+                for future in tqdm(futures, desc=f"VR {display_voting_round} DG {current_group_num}/{total_groups}", total=len(futures), disable=True):
+                    result = future.result()
+                    if result:
+                        group_comments_this_sub_round.append(result)
+                        all_round_comments.append(result)
+
+            for comment in group_comments_this_sub_round:
+                agent_name = self.agents[comment['agent_id']].name
+                message = comment['message']
+                print(f"🔸 {agent_name}:")
+                print(f"{message}")
+            print("─" * 80)
+            
+        if all_round_comments:
+            self.discussionHistory.append(all_round_comments)
+            participating_agent_ids_this_round = list(set([comment['agent_id'] for comment in all_round_comments]))
+            for agent_id in participating_agent_ids_this_round:
+                if agent_id not in self.agent_discussion_participation:
+                    self.agent_discussion_participation[agent_id] = []
+                self.agent_discussion_participation[agent_id].append(self.discussionRound - 1) 
+
+        logger.info(f"Discussion Phase {self.discussionRound} (Voting Round {display_voting_round}) completed with {len(all_round_comments)} total comments from {total_groups} groups.")
         
-        # Generate internal stances after discussion
+        logger.info(f"Updating internal stances for all agents after discussion phase {self.discussionRound}.")
         self.update_internal_stances()
 
     def list_candidates_for_prompt(self, randomize: bool = True) -> str:
@@ -508,18 +508,18 @@ class ConclaveEnv:
     
     def update_internal_stances(self) -> None:
         """
-        Update internal stances for all agents who should update them.
+        Update internal stances for all agents.
         """
         from concurrent.futures import ThreadPoolExecutor
         from tqdm import tqdm
         
-        # Find agents that should update their stance
-        agents_to_update = [agent for agent in self.agents if agent.should_update_stance()]
+        agents_to_update = self.agents # All agents update their stance
         
         if not agents_to_update:
+            logger.info("No agents to update stances for.")
             return
         
-        logger.info(f"Updating internal stances for {len(agents_to_update)} agents...")
+        logger.info(f"Updating internal stances for all {len(agents_to_update)} agents...")
         
         # Update stances in parallel
         with ThreadPoolExecutor(max_workers=min(4, len(agents_to_update))) as executor:
@@ -595,22 +595,27 @@ class ConclaveEnv:
     def get_current_discussion_participants(self) -> str:
         """
         Get information about who is participating in the current discussion round.
-        
-        Returns:
-            Formatted string with current discussion participants
+        NOTE: With the new group-based discussion, this might need re-evaluation
+        if it's still needed, as '_current_discussion_speakers' is removed.
+        For now, it will likely return an empty or default string.
         """
-        if not hasattr(self, '_current_discussion_speakers') or not self._current_discussion_speakers:
-            return "No current discussion participants."
+        # REMOVED: if not hasattr(self, '_current_discussion_speakers') or not self._current_discussion_speakers:
+        # For now, let's return a generic message as the concept has changed.
+        # A more sophisticated version would require knowing the currently active sub-group.
+        return "Discussion is now group-based. Specific per-group participant lists are logged during the round."
         
-        participant_names = []
-        for agent_id in sorted(self._current_discussion_speakers):
-            if agent_id < len(self.agents):
-                participant_names.append(f"Cardinal {self.agents[agent_id].name}")
+        # Old logic:
+        # participant_names = []
+        # for agent_id in sorted(self._current_discussion_speakers):
+        #     if agent_id < len(self.agents):
+        #         participant_names.append(self.agents[agent_id].name)
+        #     else:
+        #         participant_names.append(f"Agent {agent_id} (Not loaded)")
         
-        if len(participant_names) == 1:
-            return f"You are the only speaker in this discussion round."
-        else:
-            return f"Current discussion participants: {', '.join(participant_names)}"
+        # if len(participant_names) == 1:
+        #     return f"Currently, {participant_names[0]} is scheduled to speak."
+        # else:
+        #     return f"Currently, the following cardinals are scheduled to speak: {', '.join(participant_names)}."
     
     def get_current_scoreboard(self) -> str:
         """

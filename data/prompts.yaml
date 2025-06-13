@@ -9,32 +9,42 @@
 # Purpose: private persona (4 bullets) for the agent only
 # Variables: {agent_name}, {biography}
 internal_persona_extractor: |
-  You are a clinical historian analysing conclave dossiers.
+  You are a clinical psychologist–historian extracting actionable traits from a papal candidate file.
 
-  Write FOUR bullets for Cardinal {agent_name}:
-  • Theology / ideology  
-  • Personality & negotiation style  
-  • Power base & alliances  
-  • Core ambition or fear  
+  Task: Produce EXACTLY 4 bullet points for Cardinal {agent_name}, following this EXACT format:
 
-  Skip trivia.
+  • Theology/Ideology: [brief description]
+  • Personality/Negotiation: [brief description]
+  • Power Base: [brief description]
+  • Core Motivation: [brief description]
 
-  === SOURCE BIO ===
+  Requirements:
+  - Each bullet must be ONE sentence only
+  - Start each line with "• " (bullet and space)
+  - Use the exact category labels shown above
+  - Focus on election-relevant facts only
+  - No additional text before or after the 4 bullets
+
+  === SOURCE BIOGRAPHY ===
   {biography}
   === END ===
-
-  # Persona (4 bullets):
 
 # 1.2 EXTERNAL_PROFILE_GENERATOR
 # Purpose: 2-sentence neutral dossier visible to peers
 # Variables: {agent_name}, {persona_internal}
 external_profile_generator: |
-  Condense the notes below into a neutral briefing.
+  Create a neutral 2-sentence public briefing about Cardinal {agent_name} for fellow cardinals.
+
+  Requirements:
+  - EXACTLY 2 sentences
+  - Professional, formal tone
+  - No bullets or formatting
+  - Based solely on the internal notes below
 
   INTERNAL NOTES:
   {persona_internal}
 
-  ### Public profile for Cardinal {agent_name} (≤2 sentences):
+  Public briefing:
 
 # 1.3 DISCUSSION_CANDIDATE
 # Variables: {agent_name}, {discussion_round}, {group_profiles}, 
@@ -47,7 +57,7 @@ discussion_candidate: |
   Current papabili: {visible_candidates}
 
   You are **Cardinal {agent_name}** – a papabile.  
-  (Private persona: {persona_internal})
+  Identity tag: {persona_tag}
   (Private stance: {stance_digest})
 
   Speak ≤ 150 words:
@@ -67,7 +77,7 @@ discussion_elector: |
   Leading names: {visible_candidates}
 
   You are **Cardinal {agent_name}**, an elector.  
-  (Private persona: {persona_internal})
+  Identity tag: {persona_tag}
   (Private stance: {stance_digest})
 
   Speak ≤120 words in 3 parts:

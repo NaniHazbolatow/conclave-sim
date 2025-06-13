@@ -145,22 +145,14 @@ class ConfigManager:
         return self.get_tool_calling_config().get("retry_backoff_sec", 2.0)
     
     # Simulation configuration methods
-    
-    def get_max_speakers_per_round(self) -> int:
-        """Get the maximum number of speakers per round."""
+    def get_discussion_group_size(self) -> int:
+        """Get the configured size for discussion groups."""
+        default_size = 3 # Default if not specified anywhere
         if self.is_testing_groups_enabled():
             overrides = self.get_testing_group_overrides()
-            if "max_speakers_per_round" in overrides:
-                return overrides["max_speakers_per_round"]
-        return self.get_simulation_config().get("max_speakers_per_round", 5)
-    
-    def get_num_discussions(self) -> int:
-        """Get the number of complete discussion cycles to run."""
-        if self.is_testing_groups_enabled():
-            overrides = self.get_testing_group_overrides()
-            if "num_discussions" in overrides:
-                return overrides["num_discussions"]
-        return self.get_simulation_config().get("num_discussions", 1)
+            if "discussion_group_size" in overrides:
+                return overrides["discussion_group_size"]
+        return self.get_simulation_config().get("discussion_group_size", default_size)
     
     def get_max_election_rounds(self) -> int:
         """Get the maximum number of election rounds before stopping."""
@@ -169,10 +161,6 @@ class ConfigManager:
             if "max_election_rounds" in overrides:
                 return overrides["max_election_rounds"]
         return self.get_simulation_config().get("max_election_rounds", 3)
-    
-    def get_randomize_speaking_order(self) -> bool:
-        """Get whether to randomize the order of speakers in discussion rounds."""
-        return self.get_simulation_config().get("randomize_speaking_order", True)
     
     def get_discussion_min_words(self) -> int:
         """Get the minimum word count for discussion contributions."""

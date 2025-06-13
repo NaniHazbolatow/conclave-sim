@@ -7,6 +7,7 @@ import os
 import threading
 from ..config.manager import get_config
 from ..config.prompts import get_prompt_manager
+import datetime # Added import
 
 # Set tokenizer parallelism to avoid warnings in multiprocessing
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -47,16 +48,32 @@ class SharedLLMManager:
 _shared_llm_manager = SharedLLMManager()
 
 class Agent:
-    def __init__(self, agent_id: int, name: str, background: str, env: ConclaveEnv):
+    def __init__(self, 
+                 agent_id: int, 
+                 name: str, 
+                 background: str, 
+                 env: ConclaveEnv,
+                 cardinal_id: Optional[str] = None, # From CSV
+                 internal_persona: str = "Not set", # From CSV (Internal_Persona)
+                 public_profile: str = "Not set",   # From CSV (Public_Profile)
+                 profile_blurb: str = "N/A",       # From CSV (Profile_Blurb)
+                 persona_tag: str = "N/A"          # From CSV (Persona_Tag)
+                 ):
         self.agent_id = agent_id
         self.name = name
         self.background = background  # This serves as 'biography' from glossary
         self.env = env
+        
+        # Data from CSV, passed during initialization
+        self.cardinal_id = cardinal_id if cardinal_id is not None else str(agent_id) # Ensure it has a value
+        self.internal_persona = internal_persona
+        self.public_profile = public_profile
+        self.profile_blurb = profile_blurb
+        self.persona_tag = persona_tag
+        
         self.vote_history = []
         self.logger = logging.getLogger(name)
         
-        # Load persona data from CSV
-        self.cardinal_id = agent_id  # Cardinal ID from glossary
         self.role_tag = "ELECTOR"    # Default role, can be "CANDIDATE" or "ELECTOR"
         
         # Internal stance tracking
@@ -273,25 +290,17 @@ class Agent:
 
     def generate_internal_stance(self) -> str:
         """
-        Generate an internal stance. Variables are now primarily sourced via PromptVariableGenerator.
+        Generate an internal stance. Retries on failure.
+        Variables are now primarily sourced via PromptVariableGenerator.
         """
-        import datetime # Keep for timestamping
-
         # Determine role tag for the agent for stance generation
         if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
             self.role_tag = "CANDIDATE"
         else:
             self.role_tag = "ELECTOR"
 
-        # Variables like personal_vote_history, ballot_results_history, discussion_history,
-        # last_stance, valid_candidates_list, candidates_list are now expected to be handled
-        # by PromptVariableGenerator if they are defined in the 'stance' prompt in prompts.yaml.
-        # The agent_id is passed, and PromptManager + PromptVariableGenerator will fetch them.
-
         prompt = self.prompt_manager.get_internal_stance_prompt(
             agent_id=self.agent_id
-            # Add any non-standard variables here if needed, e.g.:
-            # my_custom_stance_variable="custom_value"
         )
         
         self.logger.debug(f"Internal stance prompt for {self.name}:\n{prompt}")
@@ -316,95 +325,66 @@ class Agent:
             }
         ]
             
-        try:
-            messages = [{"role": "user", "content": prompt}]
-            result = self.tool_caller.call_tool(messages, tools, tool_choice="generate_stance")
-            
-            if result.success and result.arguments:
-                stance = result.arguments.get("stance", "").strip()
+        MAX_STANCE_GENERATION_ATTEMPTS = 3
+        attempts = 0
+        generated_stance_text = ""
+
+        while attempts < MAX_STANCE_GENERATION_ATTEMPTS:
+            attempts += 1
+            self.logger.info(f"Attempt {attempts}/{MAX_STANCE_GENERATION_ATTEMPTS} to generate stance for {self.name}.")
+            try:
+                messages = [{"role": "user", "content": prompt}]
+                result = self.tool_caller.call_tool(messages, tools, tool_choice="generate_stance")
                 
-                if not stance:
-                    self.logger.warning(f"{self.name} generated an empty stance. Attempting fallback.")
-                    return self._generate_stance_fallback(prompt) # Pass original prompt to fallback
+                if result.success and result.arguments:
+                    stance_candidate = result.arguments.get("stance", "").strip()
+                    
+                    if stance_candidate:
+                        word_count = len(stance_candidate.split())
+                        if word_count > 150: # Max length check
+                            self.logger.warning(f"Stance from {self.name} too long ({word_count} words), truncating to 125 words...")
+                            generated_stance_text = " ".join(stance_candidate.split()[:125])
+                        elif word_count < 50: # Min length warning
+                            self.logger.warning(f"Stance from {self.name} too short ({word_count} words). This may affect embedding quality, but accepting.")
+                            generated_stance_text = stance_candidate
+                        else:
+                            generated_stance_text = stance_candidate
 
-                word_count = len(stance.split())
-                if word_count > 150: # Max length check
-                    self.logger.warning(f"Stance from {self.name} too long ({word_count} words), truncating to 125 words...")
-                    stance = " ".join(stance.split()[:125])
-                elif word_count < 50: # Min length warning
-                    self.logger.warning(f"Stance from {self.name} too short ({word_count} words). This may affect embedding quality.")
-                
-                timestamp = datetime.datetime.now()
-                self.internal_stance = stance
-                self.last_stance_update = timestamp
-                self.stance_history.append({
-                    "timestamp": timestamp, "stance": stance,
-                    "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
-                })
-                self.logger.info(f"{self.name} generated new stance (V{self.env.votingRound}.D{self.env.discussionRound}): '{stance[:100]}...'")
-                return stance
-            else:
-                error_msg = result.error if result.error else "Unknown tool calling failure."
-                self.logger.warning(f"Tool calling failed for stance generation for {self.name}: {error_msg}. Attempting fallback.")
-                return self._generate_stance_fallback(prompt) # Pass original prompt to fallback
-            
-        except Exception as e:
-            self.logger.error(f"Error generating internal stance for {self.name}: {e}", exc_info=True)
-            self.logger.info(f"Attempting fallback direct prompting for stance generation for {self.name}...")
-            return self._generate_stance_fallback(prompt) # Pass original prompt to fallback
-    
-    def _generate_stance_fallback(self, original_prompt: str) -> str:
-        """Fallback method for stance generation when tool calling fails or returns empty."""
-        try:
-            # Ensure datetime is imported if not already at the top level of the class/method
-            import datetime
-
-            fallback_prompt = f"""{original_prompt}
-
-RESPOND WITH YOUR INTERNAL STANCE DIRECTLY (NO JSON OR TOOL FORMATTING):
-Write exactly 75-125 words covering:
-- Your preferred candidate and why
-- What the Church should focus on
-- Your theological position (traditional/moderate/progressive)
-- Your main concerns
-- How recent discussions influenced you
-
-Start your response immediately with your stance (no introductory text):"""
-
-            messages = [{"role": "user", "content": fallback_prompt}]
-            response_content = self.llm_client.generate(messages) # Assuming generate returns the string content
-            
-            if response_content and len(response_content.strip()) > 20:
-                stance = response_content.strip()
-                stance = re.sub(r'^["\'{{\[\]}}]+|["\'{{\[\]}}]+$', '', stance) # Basic cleaning
-                stance = re.sub(r'\n+', ' ', stance).strip() # Normalize newlines and whitespace
-                stance = ' '.join(stance.split()) # Ensure single spaces
-                
-                word_count = len(stance.split())
-                if word_count > 150:
-                    stance = " ".join(stance.split()[:125])
-                
-                if word_count >= 30:  # Minimum acceptable length for a fallback
-                    timestamp = datetime.datetime.now()
-                    self.internal_stance = stance
-                    self.last_stance_update = timestamp
-                    self.stance_history.append({
-                        "timestamp": timestamp, "stance": stance,
-                        "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
-                    })
-                    self.logger.info(f"{self.name} generated FALLBACK stance (V{self.env.votingRound}.D{self.env.discussionRound}), {word_count} words: '{stance[:100]}...'")
-                    return stance
+                        timestamp = datetime.datetime.now()
+                        self.internal_stance = generated_stance_text
+                        self.last_stance_update = timestamp
+                        self.stance_history.append({
+                            "timestamp": timestamp, "stance": self.internal_stance,
+                            "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
+                        })
+                        self.logger.info(f"{self.name} generated new stance (V{self.env.votingRound}.D{self.env.discussionRound}) on attempt {attempts}: '{self.internal_stance[:100]}...'")
+                        return self.internal_stance # Success
+                    else:
+                        self.logger.warning(f"{self.name} generated an empty stance on attempt {attempts}.")
                 else:
-                    self.logger.warning(f"Fallback stance for {self.name} too short ({word_count} words) after cleaning.")
-                    return ""
-            else:
-                self.logger.error(f"Fallback stance generation for {self.name} failed - empty or too short response from LLM.")
-                return ""
-                
-        except Exception as e:
-            self.logger.error(f"Fallback stance generation for {self.name} failed with exception: {e}", exc_info=True)
-            return ""
-    
+                    error_msg = result.error if result.error else "Unknown tool calling failure."
+                    self.logger.warning(f"Tool calling failed for stance generation for {self.name} on attempt {attempts}: {error_msg}")
+
+            except Exception as e:
+                self.logger.error(f"Exception during stance generation attempt {attempts} for {self.name}: {e}", exc_info=True)
+            
+            if attempts < MAX_STANCE_GENERATION_ATTEMPTS:
+                # Optional: add a small delay before retrying
+                # import time
+                # time.sleep(1) 
+                pass 
+
+        # If loop finishes, all attempts failed
+        self.logger.error(f"All {MAX_STANCE_GENERATION_ATTEMPTS} attempts to generate stance for {self.name} failed.")
+        timestamp = datetime.datetime.now()
+        self.internal_stance = "" # Set to empty stance on failure
+        self.last_stance_update = timestamp
+        self.stance_history.append({
+            "timestamp": timestamp, "stance": self.internal_stance, "status": "generation_failed",
+            "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
+        })
+        return self.internal_stance
+
     def get_internal_stance(self) -> str:
         """
         Get the current internal stance, generating one if it doesn't exist or needs update.
