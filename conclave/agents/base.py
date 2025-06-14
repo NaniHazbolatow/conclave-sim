@@ -200,10 +200,11 @@ class Agent:
             # Re-raise to ensure simulation handles critical failures
             raise
 
-    def discuss(self) -> Optional[Dict]:
+    def discuss(self, current_discussion_group_ids: Optional[List[int]] = None) -> Optional[Dict]:
         """
         Generate a discussion contribution.
         Variables are now primarily sourced via PromptVariableGenerator.
+        `current_discussion_group_ids` is provided by the environment for the current sub-group.
         """
         # Determine role tag for the agent for this discussion round
         if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
@@ -216,29 +217,20 @@ class Agent:
         # Standard variables like agent_name, background, internal_stance, etc.,
         # are fetched by PromptVariableGenerator based on agent_id.
 
-        # Example of passing additional, non-standard variables if needed:
-        # extra_discussion_vars = {
-        #     'custom_variable_for_discussion': "some_value"
-        # }
-        # prompt = self.prompt_manager.get_discussion_prompt(agent_id=self.agent_id, **extra_discussion_vars)
-
+        extra_discussion_vars = {
+            'discussion_min_words': self.config.get_discussion_min_words(),
+            'discussion_max_words': self.config.get_discussion_max_words(),
+        }
+        if current_discussion_group_ids:
+            # Pass the list of participant IDs for the current group
+            extra_discussion_vars['participant_ids'] = current_discussion_group_ids
+        
         prompt = self.prompt_manager.get_discussion_prompt(
             agent_id=self.agent_id,
-            # Pass any variables not covered by PromptVariableGenerator or if overriding is needed
-            # For example, if these are dynamically calculated here and not part of standard agent vars:
-            # discussion_min_words=self.config.get_discussion_min_words(), 
-            # discussion_max_words=self.config.get_discussion_max_words()
-            # However, if these are fixed or derivable by PromptVariableGenerator, they can be removed from here.
-            # For now, assuming they might be dynamic or specific to this call context:
-            discussion_min_words=self.config.get_discussion_min_words(),
-            discussion_max_words=self.config.get_discussion_max_words(),
-            # The following are likely covered by PromptVariableGenerator if defined in prompts.yaml:
-            # current_scoreboard, personal_vote_history, ballot_results_history, 
-            # discussion_history, short_term_memory, recent_speech_snippets, 
-            # current_discussion_participants, role_description, candidates_description
+            **extra_discussion_vars
         )
-
-        self.logger.debug(f"Discussion prompt for {self.name} (Role: {self.role_tag}):\n{prompt}")
+        
+        self.logger.debug(f"Discussion prompt for {self.name} (Role: {self.role_tag}):\\n{prompt}")
 
         min_words = self.config.get_discussion_min_words()
         max_words = self.config.get_discussion_max_words()
@@ -253,7 +245,7 @@ class Agent:
                         "properties": {
                             "message": {
                                 "type": "string",
-                                "description": f"Your contribution to the discussion ({min_words}-{max_words} words)"
+                                "description": f"Your contribution to the discussion. Ensure your message is a complete thought or statement, and not cut short. Avoid ending abruptly, especially after introductory phrases like 'As he said,'. The message should be between {min_words} and {max_words} words."
                             }
                         },
                         "required": ["message"]

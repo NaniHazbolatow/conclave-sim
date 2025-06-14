@@ -88,7 +88,8 @@ discussion_elector: |
   Remain formal; no meta-commentary.
 
 # 1.5 DISCUSSION_ANALYZER
-# Variables: {round_id}, {group_transcript} -> add quotes of candidates?
+# Variables: {round_id}, {group_transcript} -> 
+# add quotes of candidates, forming alliances (used to update stance)
 discussion_analyzer: |
   SYSTEM · Group-Summary Bot  
   Input  : transcript of round {round_id}  

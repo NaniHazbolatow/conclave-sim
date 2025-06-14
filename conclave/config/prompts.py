@@ -85,33 +85,42 @@ class PromptManager:
             agent_vars = self.variable_generator.generate_agent_variables(agent_id, prompt_name)
             variables.update(agent_vars)
 
-        # Generate group-specific variables if applicable
-        # Check if participant_ids are passed directly in extra_vars first
-        participant_ids = extra_vars.get('participant_ids')
+        # Handle group-specific variables
+        if self.variable_generator:
+            participant_ids_source = extra_vars.get('participant_ids')
+            if participant_ids_source is None and self.env and hasattr(self.env, '_current_discussion_speakers') and self.env._current_discussion_speakers:
+                participant_ids_source = list(self.env._current_discussion_speakers)
 
-        if participant_ids is None and self.env is not None and hasattr(self.env, '_current_discussion_speakers') and self.env._current_discussion_speakers:
-            # Fallback to _current_discussion_speakers if not in extra_vars
-            participant_ids = list(self.env._current_discussion_speakers) # Ensure it's a list
-        
-        if participant_ids and self.variable_generator:
-            try:
-                # Ensure participant_ids is a list of integers
-                if not all(isinstance(pid, int) for pid in participant_ids):
-                    logger.warning(f"Participant IDs for prompt '{prompt_name}' are not all integers: {participant_ids}. Attempting conversion.")
-                    try:
-                        participant_ids = [int(pid) for pid in participant_ids]
-                    except ValueError as ve:
-                        logger.error(f"Failed to convert participant IDs to integers for prompt '{prompt_name}': {ve}. Skipping group variable generation.")
-                        participant_ids = None # Prevent further processing with invalid IDs
-
-                if participant_ids: # Proceed if participant_ids are valid
-                    group_vars = self.variable_generator.generate_group_variables(participant_ids)
+            processed_participant_ids = []
+            if participant_ids_source:
+                try:
+                    if not all(isinstance(pid, int) for pid in participant_ids_source):
+                        logger.debug(f"Attempting conversion of participant IDs for prompt '{prompt_name}': {participant_ids_source}")
+                        processed_participant_ids = [int(pid) for pid in participant_ids_source]
+                    else:
+                        processed_participant_ids = list(participant_ids_source) # Ensure it's a list
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid participant IDs provided for prompt '{prompt_name}': {participant_ids_source}. Error: {e}. Group variables will use an empty participant list.")
+                    # processed_participant_ids remains []
+            
+            # For discussion prompts, always attempt to generate group_vars.
+            # generate_group_variables internally calls generate_group_profiles, which handles empty lists.
+            # For other prompts, only generate if processed_participant_ids is actually populated.
+            if prompt_name.startswith("discussion_") or processed_participant_ids:
+                try:
+                    group_vars = self.variable_generator.generate_group_variables(processed_participant_ids)
                     variables.update(group_vars)
-            except Exception as e:
-                logger.warning(f"Error generating group variables for prompt '{prompt_name}' with participants {participant_ids}: {e}")
-        elif prompt_name.startswith("discussion_"):
-            # Log a warning if group_profiles might be expected but participant_ids are missing
-            logger.warning(f"Participant IDs not available for prompt '{prompt_name}'. Group variables (like group_profiles) will be missing.")
+                    if prompt_name.startswith("discussion_") and not processed_participant_ids:
+                        logger.info(f"No valid participant IDs were available for discussion prompt '{prompt_name}'. 'group_profiles' was generated with a default message by PromptVariableGenerator.")
+                except Exception as e:
+                    logger.error(f"Error generating group variables for prompt '{prompt_name}' with processed IDs {processed_participant_ids}: {e}")
+                    if prompt_name.startswith("discussion_"):
+                        logger.warning(f"Group variables (like group_profiles) might be missing for '{prompt_name}' due to an error during their generation. Fallback will be used if 'group_profiles' is not in template.")
+                        # Ensure 'group_profiles' is not in variables if its generation failed, to trigger fallback for sure.
+                        variables.pop('group_profiles', None) 
+        elif prompt_name.startswith("discussion_"): # This case means self.variable_generator is None
+            logger.warning(f"Variable generator not available. Group variables (like group_profiles) for prompt '{prompt_name}' will rely on fallbacks.")
+            # 'group_profiles' will be missing, and the existing fallback logic will handle it.
 
         variables.update(extra_vars) # Allow extra_vars to override any generated variables
         

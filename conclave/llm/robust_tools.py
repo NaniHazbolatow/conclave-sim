@@ -540,9 +540,9 @@ Description: {description}
         
         # Add specific examples based on function name
         if name == "cast_vote":
-            instructions += f'\nExample: {{"function": "cast_vote", "parameters": {{"vote_cardinal_id": 2}}}}\n'
+            instructions += f'\\nExample: {{\"function\": \"cast_vote\", \"parameters\": {{\"vote_cardinal_id\": 2}}}}\\n'
         elif name == "speak_message":
-            instructions += f'\nExample: {{"function": "speak_message", "parameters": {{"message": "Your Eminence Cardinal Parolin, I believe we need a Pope who can unite the Church through both pastoral care and doctrinal clarity. While I appreciate Cardinal Tagle\'s commitment to social justice, I am concerned about the challenges facing our global Church. How do you propose to address the declining faith participation in Europe while maintaining our mission to the marginalized? I suggest we rally behind a candidate who demonstrates both theological depth and practical experience in Church governance."}}}}\n'
+            instructions += f'\\nExample: {{\"function\": \"speak_message\", \"parameters\": {{\"message\": \"As Cardinal Newman wisely said, \'To live is to change, and to be perfect is to have changed often.\' This principle should guide our deliberations. We must find a leader who embraces necessary change while upholding our core tenets.\"}}}}\\n'
         elif name == "generate_stance":
             instructions += f'\nExample: {{"function": "generate_stance", "parameters": {{"stance": "I favor Cardinal Pietro Parolin due to his diplomatic experience and moderate theological approach. The Church should prioritize evangelization while addressing contemporary social challenges like climate change and economic inequality. I hold a centrist position, balancing tradition with necessary pastoral adaptation. My main concern is candidates who might polarize the College or neglect the Global South. Recent discussions about synodality have reinforced my belief that we need a collaborative leader who can bridge theological divisions within our College."}}}}\n'
             instructions += "\nIMPORTANT FOR STANCE: Write exactly 75-125 words. Be specific about preferred candidate, Church priorities, theological position, concerns, and recent discussion influence."

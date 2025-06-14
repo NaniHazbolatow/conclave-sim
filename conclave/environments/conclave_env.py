@@ -395,7 +395,8 @@ class ConclaveEnv:
         comments_from_this_group = []
         for agent in group_speakers: # Sequential discussion within the group
             try:
-                comment_data = agent.discuss()
+                # Pass the current group's agent IDs to the discuss method
+                comment_data = agent.discuss(current_discussion_group_ids=group_agent_ids)
 
                 if isinstance(comment_data, dict) and 'agent_id' in comment_data and 'message' in comment_data:
                     # Ensure agent_id from comment_data matches the current agent if possible, or trust comment_data
