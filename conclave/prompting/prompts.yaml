@@ -134,8 +134,6 @@ stance: |
 
   Vote & momentum : {compact_scoreboard}  
   Viable papabili  : {visible_candidates}
-  
-  Available Cardinal IDs for voting: {visible_candidates_ids}
 
   Reflection digest:
   {reflection_digest}
@@ -182,3 +180,55 @@ voting_elector: |
 
   Return **exact JSON**:
   {{"vote_cardinal_id": <Cardinal_ID from {visible_candidates_ids}>}}
+
+# ===================================================================
+# TOOL DEFINITIONS FOR ROBUST_TOOLS.PY
+# ===================================================================
+tool_definitions:
+  generate_stance:
+    name: "generate_stance"
+    description: "Generates a detailed stance for a cardinal regarding their preferred candidate, church priorities, theological position, concerns, and the influence of recent discussions."
+    parameters:
+      type: "object"
+      properties:
+        stance:
+          type: "string"
+          description: "The detailed stance of the cardinal (75-125 words)."
+      required: ["stance"]
+    example_json: |
+      {"function": "generate_stance", "parameters": {"stance": "I favor Cardinal Pietro Parolin due to his diplomatic experience and moderate theological approach. The Church should prioritize evangelization while addressing contemporary social challenges like climate change and economic inequality. I hold a centrist position, balancing tradition with necessary pastoral adaptation. My main concern is candidates who might polarize the College or neglect the Global South. Recent discussions about synodality have reinforced my belief that we need a collaborative leader who can bridge theological divisions within our College."}}
+    additional_prompt_instructions: |
+      IMPORTANT FOR STANCE: Write exactly 75-125 words. Be specific about preferred candidate, Church priorities, theological position, concerns, and recent discussion influence.
+
+  cast_vote:
+    name: "cast_vote"
+    description: "Casts a vote for a specific cardinal candidate."
+    parameters:
+      type: "object"
+      properties:
+        vote_cardinal_id:
+          type: "integer"
+          description: "The ID of the cardinal being voted for."
+        explanation:
+          type: "string"
+          description: "A brief explanation for the vote (optional)."
+      required: ["vote_cardinal_id"]
+    example_json: |
+      {"function": "cast_vote", "parameters": {"vote_cardinal_id": 2, "explanation": "Cardinal Parolin's experience is vital."}}
+    additional_prompt_instructions: |
+      Ensure 'vote_cardinal_id' is an integer. Provide a concise explanation if possible.
+
+  speak_message:
+    name: "speak_message"
+    description: "Allows the cardinal to speak a message during discussions."
+    parameters:
+      type: "object"
+      properties:
+        message:
+          type: "string"
+          description: "The message to be spoken by the cardinal."
+      required: ["message"]
+    example_json: |
+      {"function": "speak_message", "parameters": {"message": "As Cardinal Newman wisely said, 'To live is to change, and to be perfect is to have changed often.' This principle should guide our deliberations. We must find a leader who embraces necessary change while upholding our core tenets."}}
+    additional_prompt_instructions: |
+      Keep the message concise and relevant to the ongoing discussion. Address other cardinals formally.

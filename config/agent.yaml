@@ -1,0 +1,33 @@
+llm:
+  backend: remote
+  temperature: 0.7
+  max_tokens: 500
+  tool_calling:
+    max_retries: 3
+    retry_delay: 1.0
+    retry_backoff_sec: 2
+    enable_fallback: true
+  local:
+    model_name: meta-llama/llama-3.1-8b-instruct
+    use_quantization: false
+    device: auto
+    cache_dir: ~/.cache/huggingface
+    do_sample: true
+    top_p: 0.9
+    repetition_penalty: 1.1
+  remote:
+    model_name: meta-llama/llama-3.1-8b-instruct
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    top_p: 0.9
+    frequency_penalty: 0.1
+    presence_penalty: 0.1
+
+embeddings:
+  model_name: intfloat/e5-large-v2
+  device: auto
+  batch_size: 32
+  enable_caching: true
+  cache_dir: ~/.cache/embeddings
+  similarity_threshold: 0.7
+  max_search_results: 10

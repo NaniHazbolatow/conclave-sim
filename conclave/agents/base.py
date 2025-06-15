@@ -1,18 +1,19 @@
-from ..environments.conclave_env import ConclaveEnv
+from typing import TYPE_CHECKING, Dict, List, Optional # Added TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..environments.conclave_env import ConclaveEnv # Moved import under TYPE_CHECKING
 import json
 import re
-from typing import Dict, List, Optional
+# from typing import Dict, List, Optional # Duplicate import removed
 import logging
 import os
 import threading
-from ..config.manager import get_config
-from ..config.prompts import get_prompt_manager
-import datetime # Added import
+import datetime # Added import for datetime
+# from ...config.scripts.adapter import ConfigAdapter # Corrected to relative import and import ConfigAdapter
+from config.scripts.adapter import ConfigAdapter # Changed to absolute import
+from ..prompting import get_prompt_loader # Corrected import to use prompting
+from ..prompting.prompt_variable_generator import PromptVariableGenerator # Added import
 
-# Set tokenizer parallelism to avoid warnings in multiprocessing
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("conclave.agents") # Changed from __name__
 
 # Shared LLM client manager to avoid multiple model instances
 class SharedLLMManager:
@@ -26,21 +27,26 @@ class SharedLLMManager:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def get_client(self, config):
+    def get_client(self, config_adapter): # Changed parameter name for clarity
         """Get shared LLM client instance based on configuration."""
-        if config.is_local_backend():
+        # Access the actual Pydantic config model via config_adapter.config
+        llm_config = config_adapter.config.agent.llm
+        
+        if llm_config.backend == 'local': # Use attribute access
             with self._lock:  # Thread-safe client creation
                 if self._local_client is None:
                     from ..llm.client import HuggingFaceClient
-                    client_kwargs = config.get_llm_client_kwargs()
+                    # Use the adapter's method to get pre-processed kwargs if available,
+                    # or construct from the Pydantic model directly.
+                    # Assuming get_llm_client_kwargs is still useful or adapt.
+                    client_kwargs = config_adapter.get_llm_client_kwargs() 
                     client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
                     self._local_client = HuggingFaceClient(**client_kwargs)
                     print(f"Created shared local LLM client: {self._local_client.model_name}")
                 return self._local_client
-        else:
-            # For remote clients, create separate instances (they're stateless)
+        else: # 'remote' backend
             from ..llm.client import RemoteLLMClient
-            client_kwargs = config.get_llm_client_kwargs()
+            client_kwargs = config_adapter.get_llm_client_kwargs()
             client_kwargs = {k: v for k, v in client_kwargs.items() if v is not None}
             return RemoteLLMClient(**client_kwargs)
 
@@ -50,213 +56,183 @@ _shared_llm_manager = SharedLLMManager()
 class Agent:
     def __init__(self, 
                  agent_id: int, 
+                 conclave_env: 'ConclaveEnv', 
                  name: str, 
-                 background: str, 
-                 env: ConclaveEnv,
-                 cardinal_id: Optional[str] = None, # From CSV
-                 internal_persona: str = "Not set", # From CSV (Internal_Persona)
-                 public_profile: str = "Not set",   # From CSV (Public_Profile)
-                 profile_blurb: str = "N/A",       # From CSV (Profile_Blurb)
-                 persona_tag: str = "N/A"          # From CSV (Persona_Tag)
-                 ):
+                 personality: str, 
+                 initial_stance: str, 
+                 party_loyalty: float, 
+                 agent_type: str = "default"):
         self.agent_id = agent_id
+        self.conclave_env = conclave_env # Reference to the environment
+        # self.config_adapter = get_config() # Get the ConfigAdapter instance
+        self.config_adapter = ConfigAdapter() # Instantiate ConfigAdapter
         self.name = name
-        self.background = background  # This serves as 'biography' from glossary
-        self.env = env
         
-        # Data from CSV, passed during initialization
-        self.cardinal_id = cardinal_id if cardinal_id is not None else str(agent_id) # Ensure it has a value
-        self.internal_persona = internal_persona
-        self.public_profile = public_profile
-        self.profile_blurb = profile_blurb
-        self.persona_tag = persona_tag
+        self.env = conclave_env
+        
+        self.cardinal_id = str(agent_id)  # Directly using agent_id as string
+        self.internal_persona = initial_stance  # Assuming this is the intended mapping
+        self.public_profile = "Not set"
+        self.profile_blurb = "N/A"
+        self.persona_tag = "N/A"
         
         self.vote_history = []
-        self.logger = logging.getLogger(name)
+        self.logger = logging.getLogger(f"conclave.agents.{self.name.replace(' ', '_')}")
         
-        self.role_tag = "ELECTOR"    # Default role, can be "CANDIDATE" or "ELECTOR"
+        self.role_tag = "ELECTOR"    
         
-        # Internal stance tracking
-        self.internal_stance = None  # Current internal stance as plain text
-        self.stance_history = []     # History of stance updates with timestamps
-        self.last_stance_update = None  # When stance was last generated
+        self.internal_stance = None  
+        self.stance_history = []     
+        self.last_stance_update = None  
         
-        # Get configuration and prompt manager
-        self.config = get_config()
-        self.prompt_manager = get_prompt_manager()
+        self.config = self.config_adapter.config # Access the root Pydantic config model
         
-        # Use shared LLM client to avoid multiple model instances
+        self.prompt_loader = get_prompt_loader()
+        self.prompt_variable_generator = PromptVariableGenerator(env=self.env, prompt_loader=self.prompt_loader) 
+        
         try:
-            self.llm_client = _shared_llm_manager.get_client(self.config)
+            # Pass the ConfigAdapter instance to the shared manager
+            self.llm_client = _shared_llm_manager.get_client(self.config_adapter) 
             
-            # Initialize robust tool caller (import here to avoid circular imports)
             from ..llm.robust_tools import RobustToolCaller
-            self.tool_caller = RobustToolCaller(self.llm_client, self.logger, config=self.config)
+            # Removed config_adapter from RobustToolCaller constructor
+            self.tool_caller = RobustToolCaller(self.llm_client, self.logger) 
             
-            self.logger.info(f"Agent {self.name} initialized with {self.config.get_backend_type()} backend, model: {self.llm_client.model_name}")
+            self.logger.info(f"Agent {self.name} initialized with {self.config.agent.llm.backend} backend, model: {self.llm_client.model_name}") # Corrected config access
             
         except Exception as e:
             self.logger.error(f"Failed to initialize LLM client for agent {self.name}: {e}")
             raise
 
-    def cast_vote(self) -> None:
+    def cast_vote(self, current_round: int) -> bool: # Added current_round parameter, returns bool
         """Cast a vote using the new variable-based voting prompts."""
-        # Determine role tag for the agent for this voting round
-        if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
+        # Determine role and prompt based on whether the agent is a candidate
+        # This check needs to access environment state about candidates.
+        # Assuming self.env.candidate_ids or a similar attribute holds current candidates.
+        if self.agent_id in self.env.candidate_ids: # Check if self is a candidate
             self.role_tag = "CANDIDATE"
+            prompt_name = "voting_candidate"
         else:
-            self.role_tag = "ELECTOR" 
+            self.role_tag = "ELECTOR"
+            prompt_name = "voting_elector"
         
-        # Get the appropriate voting prompt based on agent_id and determined role
-        # The PromptManager will handle selecting voting_candidate or voting_elector
-        voting_prompt = self.prompt_manager.get_voting_prompt(agent_id=self.agent_id)
+        voting_prompt = self.prompt_variable_generator.generate_prompt(
+            prompt_name=prompt_name,
+            agent_id=self.agent_id,
+            # current_round is now part of agent_variables, but can be overridden if needed
+            # current_round=current_round # Pass current_round if prompt needs it explicitly beyond agent_variables
+        )
         
-        self.logger.debug(f"Voting prompt for {self.name} (Role: {self.role_tag}): {voting_prompt}")
+        self.logger.debug(f"LLM Request: Voting prompt for {self.name} (Role: {self.role_tag}): {voting_prompt}")
         
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "cast_vote",
-                    "description": "Cast a vote for a candidate using their Cardinal ID",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "vote_cardinal_id": {
-                                "type": "integer",
-                                "description": "Cardinal ID of the candidate to vote for"
-                            }
-                        },
-                        "required": ["vote_cardinal_id"]
-                    }
-                }
-            }
-        ]
+        cast_vote_tool_def = self.prompt_loader.get_tool_definition("cast_vote")
+        if not cast_vote_tool_def:
+            self.logger.error(f"Tool definition for 'cast_vote' not found in prompts.yaml for agent {self.name}")
+            raise ValueError("Tool definition for 'cast_vote' not found.")
+        tools = [cast_vote_tool_def]
         
         try:
             messages = [{"role": "user", "content": voting_prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="cast_vote")
             
-            self.logger.debug(f"=== VOTE TOOL CALLING RESULT FOR {self.name} ===")
+            self.logger.debug(f"=== VOTE TOOL CALLING RESULT FOR {self.name} ====")
             self.logger.debug(f"Success: {result.success}")
             self.logger.debug(f"Arguments: {result.arguments}")
             self.logger.debug(f"Error: {result.error}")
-            self.logger.debug(f"=== END VOTE RESULT ===")
+            self.logger.debug(f"=== END VOTE RESULT ====")
             
             if result.success and result.arguments:
-                cardinal_id = result.arguments.get("vote_cardinal_id")
+                cardinal_id_str = result.arguments.get("vote_cardinal_id") # vote_cardinal_id is likely a string
 
-                if cardinal_id is not None:
+                if cardinal_id_str is not None:
                     try:
-                        cardinal_id = int(cardinal_id)
-                        # Convert cardinal_id to agent_id (internal)
-                        # This assumes a mapping or direct use if cardinal_id is the agent_id
-                        # For now, let's assume cardinal_id from prompt IS the agent_id for simplicity
-                        # If there's a separate mapping, it needs to be resolved here.
-                        # Example: agent_to_vote_for_id = self.env.get_agent_id_from_cardinal_id(cardinal_id)
-                        
+                        # Attempt to find the agent whose cardinal_id (string) matches the vote
                         agent_to_vote_for_id = None
-                        for i, agent_in_env in enumerate(self.env.agents):
-                            if getattr(agent_in_env, 'cardinal_id', i) == cardinal_id:
-                                agent_to_vote_for_id = i
+                        voted_cardinal_obj = None # Store the agent object to get name later
+
+                        for agent_in_env in self.env.agents:
+                            # Ensure comparison is robust (e.g. string to string)
+                            if str(getattr(agent_in_env, 'cardinal_id', '-1')) == str(cardinal_id_str):
+                                agent_to_vote_for_id = agent_in_env.agent_id
+                                voted_cardinal_obj = agent_in_env
                                 break
                         
                         if agent_to_vote_for_id is None:
-                            available_cardinals = [getattr(agent, 'cardinal_id', i) for i, agent in enumerate(self.env.agents)]
-                            raise ValueError(f"Cardinal ID {cardinal_id} not found. Available: {available_cardinals}")
+                            available_cardinals = [str(getattr(agent, 'cardinal_id', ag_idx)) for ag_idx, agent in enumerate(self.env.agents)]
+                            raise ValueError(f"Cardinal ID '{cardinal_id_str}' not found among loaded agents. Available: {available_cardinals}")
 
                         if not self.env.is_valid_vote_candidate(agent_to_vote_for_id):
-                            # Provide more context on available candidates if vote is invalid
-                            # This requires a method in env to list votable candidates' cardinal IDs
-                            # For now, just log the error
-                            raise ValueError(f"Cardinal {cardinal_id} (Agent ID: {agent_to_vote_for_id}) is not eligible to receive votes.")
+                            raise ValueError(f"Cardinal ID '{cardinal_id_str}' (Agent ID: {agent_to_vote_for_id}) is not eligible to receive votes.")
 
-                        self.logger.debug(f"Valid Cardinal ID {cardinal_id} (Agent {agent_to_vote_for_id}) selected by {self.name}")
+                        self.logger.debug(f"Valid Cardinal ID '{cardinal_id_str}' (Agent {agent_to_vote_for_id}) selected by {self.name}")
                         
                         self.vote_history.append({
-                            "vote": agent_to_vote_for_id, # Store internal agent_id
-                            "reasoning": f"Voted for Cardinal {cardinal_id} based on internal stance and voting prompt analysis."
+                            "vote": agent_to_vote_for_id, 
+                            "reasoning": f"Voted for Cardinal {cardinal_id_str} based on internal stance and voting prompt analysis.",
+                            "round": current_round # Log the round
                         })
 
                         self.env.cast_vote(agent_to_vote_for_id, self.agent_id)
-                        voted_candidate_name = self.env.agents[agent_to_vote_for_id].name
-                        self.logger.info(f"{self.name} voted for Cardinal {cardinal_id} - {voted_candidate_name}")
-                        return
+                        voted_candidate_name = voted_cardinal_obj.name if voted_cardinal_obj else f"Agent {agent_to_vote_for_id}"
+                        self.logger.info(f"{self.name} voted for Cardinal {cardinal_id_str} - {voted_candidate_name} in round {current_round}")
+                        return True # Indicate success
                         
                     except (ValueError, TypeError) as e:
-                        self.logger.error(f"Invalid Cardinal ID '{cardinal_id}' provided by {self.name}: {e}")
-                        # Consider not re-raising if a fallback (e.g., abstaining) is desired
-                        raise ValueError(f"Invalid Cardinal ID: {cardinal_id}") 
+                        self.logger.error(f"Invalid Cardinal ID '{cardinal_id_str}' provided by {self.name}: {e}")
+                        # self.env.cast_vote(-1, self.agent_id) # Record abstention/failure
+                        return False # Indicate failure
                 else:
                     self.logger.error(f"{self.name} failed to provide a Cardinal ID in vote.")
-                    raise ValueError("No Cardinal ID provided in vote by agent.")
+                    # self.env.cast_vote(-1, self.agent_id) # Record abstention/failure
+                    return False # Indicate failure
             else:
                 error_msg = result.error if result.error else "Unknown tool calling failure."
                 self.logger.error(f"Tool calling failed for {self.name} during voting: {error_msg}")
-                raise ValueError(f"Tool calling failed: {error_msg}")
+                # self.env.cast_vote(-1, self.agent_id) # Record abstention/failure
+                return False # Indicate failure
 
         except Exception as e:
-            self.logger.error(f"Error in {self.name} voting process: {e}", exc_info=True)
-            # Re-raise to ensure simulation handles critical failures
-            raise
+            self.logger.error(f"Error in {self.name} voting process (round {current_round}): {e}", exc_info=True)
+            # self.env.cast_vote(-1, self.agent_id) # Record abstention/failure
+            return False # Indicate failure
 
-    def discuss(self, current_discussion_group_ids: Optional[List[int]] = None) -> Optional[Dict]:
+    def discuss(self, current_discussion_group_ids: Optional[List[int]] = None, current_discussion_round: Optional[int] = None) -> Optional[Dict]: # Added current_discussion_round
         """
         Generate a discussion contribution.
         Variables are now primarily sourced via PromptVariableGenerator.
         `current_discussion_group_ids` is provided by the environment for the current sub-group.
         """
-        # Determine role tag for the agent for this discussion round
         if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
             self.role_tag = "CANDIDATE"
+            prompt_name_to_use = "discussion_candidate"
         else:
             self.role_tag = "ELECTOR"
+            prompt_name_to_use = "discussion_elector"
 
-        # Most variables are now automatically handled by PromptManager and PromptVariableGenerator
-        # We only need to pass agent_id and any specific non-standard variables if required.
-        # Standard variables like agent_name, background, internal_stance, etc.,
-        # are fetched by PromptVariableGenerator based on agent_id.
-
-        extra_discussion_vars = {
-            'discussion_min_words': self.config.get_discussion_min_words(),
-            'discussion_max_words': self.config.get_discussion_max_words(),
+        extra_vars_for_prompt = {
+            'discussion_min_words': self.config.simulation.discussion_length.min_words,
+            'discussion_max_words': self.config.simulation.discussion_length.max_words,
+            # discussion_round is now passed to generate_prompt directly if needed by the template
         }
-        if current_discussion_group_ids:
-            # Pass the list of participant IDs for the current group
-            extra_discussion_vars['participant_ids'] = current_discussion_group_ids
         
-        prompt = self.prompt_manager.get_discussion_prompt(
+        prompt = self.prompt_variable_generator.generate_prompt(
+            prompt_name=prompt_name_to_use,
             agent_id=self.agent_id,
-            **extra_discussion_vars
+            discussion_group_ids=current_discussion_group_ids,
+            discussion_round=current_discussion_round, # Pass current_discussion_round
+            **extra_vars_for_prompt
         )
         
-        self.logger.debug(f"Discussion prompt for {self.name} (Role: {self.role_tag}):\\n{prompt}")
+        self.logger.debug(f"LLM Request: Discussion prompt for {self.name} (Role: {self.role_tag}):\\n{prompt}")
 
-        min_words = self.config.get_discussion_min_words()
-        max_words = self.config.get_discussion_max_words()
-        tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "speak_message",
-                    "description": "Contribute a message to the conclave discussion",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "message": {
-                                "type": "string",
-                                "description": f"Your contribution to the discussion. Ensure your message is a complete thought or statement, and not cut short. Avoid ending abruptly, especially after introductory phrases like 'As he said,'. The message should be between {min_words} and {max_words} words."
-                            }
-                        },
-                        "required": ["message"]
-                    }
-                }
-            }
-        ]
+        speak_message_tool_def = self.prompt_loader.get_tool_definition("speak_message")
+        if not speak_message_tool_def:
+            self.logger.error(f"Tool definition for 'speak_message' not found in prompts.yaml for agent {self.name}")
+            raise ValueError("Tool definition for 'speak_message' not found.")
+        
+        tools = [speak_message_tool_def]
 
         try:
-            # The 'print(prompt)' can be removed or kept for debugging as needed
-            # print(prompt) 
             messages = [{"role": "user", "content": prompt}]
             result = self.tool_caller.call_tool(messages, tools, tool_choice="speak_message")
             
@@ -264,127 +240,107 @@ class Agent:
                 message = result.arguments.get("message", "")
                 if not message.strip():
                     self.logger.warning(f"{self.name} ({self.agent_id}) provided an empty message.")
-                    # Optionally return a default message or handle as an error
                     message = "(Agent provided no message)"
 
-                self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
+                self.logger.info(f"{self.name} ({self.agent_id}) speaks:\\n{message}")
                 return {"agent_id": self.agent_id, "message": message}
             else:
                 error_msg = result.error if result.error else "Unknown tool calling failure."
                 self.logger.warning(f"Discussion tool calling failed for {self.name}: {error_msg}")
-                # Return a message indicating failure, useful for the environment to track
                 return {"agent_id": self.agent_id, "message": f"(Tool calling failed: {error_msg})"}
 
         except Exception as e:
             self.logger.error(f"Error in Agent {self.name} ({self.agent_id}) discussion: {e}", exc_info=True)
-            # Return None or a dict with error to allow simulation to continue if desired
             return {"agent_id": self.agent_id, "message": f"(Discussion error: {e})"}
 
     def generate_internal_stance(self) -> str:
         """
-        Generate an internal stance. Retries on failure.
-        Variables are now primarily sourced via PromptVariableGenerator.
+        Generate an internal stance using LLM with stance generation prompt and tool.
+        Variables are sourced via PromptVariableGenerator.
         """
-        # Determine role tag for the agent for stance generation
-        if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
-            self.role_tag = "CANDIDATE"
-        else:
-            self.role_tag = "ELECTOR"
-
-        prompt = self.prompt_manager.get_internal_stance_prompt(
+        self.logger.info(f"Generating internal stance for {self.name} (V{self.env.votingRound}.D{self.env.discussionRound})")
+        
+        stance_prompt = self.prompt_variable_generator.generate_prompt(
+            prompt_name="stance",
             agent_id=self.agent_id
         )
         
-        self.logger.debug(f"Internal stance prompt for {self.name}:\n{prompt}")
-
-        tools = [
-            {
-                "type": "function", 
-                "function": {
-                    "name": "generate_stance",
-                    "description": "Generate a concise internal stance on the papal election",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "stance": {
-                                "type": "string",
-                                "description": "Your internal stance (75-125 words ONLY). Must be direct, concrete, and avoid diplomatic language. Focus on specific positions and candidate preferences."
-                            }
-                        },
-                        "required": ["stance"]
-                    }
-                }
-            }
-        ]
+        self.logger.debug(f"LLM Request: Stance prompt for {self.name}:\\n{stance_prompt}")
+        
+        generate_stance_tool_def = self.prompt_loader.get_tool_definition("generate_stance")
+        if not generate_stance_tool_def:
+            self.logger.error(f"Tool definition for 'generate_stance' not found in prompts.yaml for agent {self.name}")
+            raise ValueError("Tool definition for 'generate_stance' not found.")
+        tools = [generate_stance_tool_def]
+        
+        try:
+            messages = [{"role": "user", "content": stance_prompt}]
+            result = self.tool_caller.call_tool(messages, tools, tool_choice="generate_stance")
             
-        MAX_STANCE_GENERATION_ATTEMPTS = 3
-        attempts = 0
-        generated_stance_text = ""
-
-        while attempts < MAX_STANCE_GENERATION_ATTEMPTS:
-            attempts += 1
-            self.logger.info(f"Attempt {attempts}/{MAX_STANCE_GENERATION_ATTEMPTS} to generate stance for {self.name}.")
-            try:
-                messages = [{"role": "user", "content": prompt}]
-                result = self.tool_caller.call_tool(messages, tools, tool_choice="generate_stance")
+            self.logger.debug(f"=== STANCE TOOL CALLING RESULT FOR {self.name} ====")
+            self.logger.debug(f"Success: {result.success}")
+            self.logger.debug(f"Arguments: {result.arguments}")
+            self.logger.debug(f"Error: {result.error}")
+            self.logger.debug(f"=== END STANCE RESULT ====")
+            
+            if result.success and result.arguments:
+                stance = result.arguments.get("stance", "").strip()
                 
-                if result.success and result.arguments:
-                    stance_candidate = result.arguments.get("stance", "").strip()
-                    
-                    if stance_candidate:
-                        word_count = len(stance_candidate.split())
-                        if word_count > 150: # Max length check
-                            self.logger.warning(f"Stance from {self.name} too long ({word_count} words), truncating to 125 words...")
-                            generated_stance_text = " ".join(stance_candidate.split()[:125])
-                        elif word_count < 50: # Min length warning
-                            self.logger.warning(f"Stance from {self.name} too short ({word_count} words). This may affect embedding quality, but accepting.")
-                            generated_stance_text = stance_candidate
-                        else:
-                            generated_stance_text = stance_candidate
-
-                        timestamp = datetime.datetime.now()
-                        self.internal_stance = generated_stance_text
-                        self.last_stance_update = timestamp
-                        self.stance_history.append({
-                            "timestamp": timestamp, "stance": self.internal_stance,
-                            "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
-                        })
-                        self.logger.info(f"{self.name} generated new stance (V{self.env.votingRound}.D{self.env.discussionRound}) on attempt {attempts}: '{self.internal_stance[:100]}...'")
-                        return self.internal_stance # Success
-                    else:
-                        self.logger.warning(f"{self.name} generated an empty stance on attempt {attempts}.")
+                if stance:
+                    timestamp = datetime.datetime.now()
+                    self.internal_stance = stance
+                    self.last_stance_update = timestamp
+                    self.stance_history.append({
+                        "timestamp": timestamp, 
+                        "stance": self.internal_stance, 
+                        "status": "generated",
+                        "voting_round": self.env.votingRound, 
+                        "discussion_round": self.env.discussionRound
+                    })
+                    self.logger.info(f"Successfully generated stance for {self.name}: {stance[:100]}{'...' if len(stance) > 100 else ''}")
+                    return self.internal_stance
                 else:
-                    error_msg = result.error if result.error else "Unknown tool calling failure."
-                    self.logger.warning(f"Tool calling failed for stance generation for {self.name} on attempt {attempts}: {error_msg}")
-
-            except Exception as e:
-                self.logger.error(f"Exception during stance generation attempt {attempts} for {self.name}: {e}", exc_info=True)
+                    self.logger.warning(f"Empty stance returned for {self.name}")
+                    
+            error_msg = result.error if result.error else "Unknown error in stance generation"
+            self.logger.error(f"Failed to generate stance for {self.name}: {error_msg}")
             
-            if attempts < MAX_STANCE_GENERATION_ATTEMPTS:
-                # Optional: add a small delay before retrying
-                # import time
-                # time.sleep(1) 
-                pass 
-
-        # If loop finishes, all attempts failed
-        self.logger.error(f"All {MAX_STANCE_GENERATION_ATTEMPTS} attempts to generate stance for {self.name} failed.")
-        timestamp = datetime.datetime.now()
-        self.internal_stance = "" # Set to empty stance on failure
-        self.last_stance_update = timestamp
-        self.stance_history.append({
-            "timestamp": timestamp, "stance": self.internal_stance, "status": "generation_failed",
-            "voting_round": self.env.votingRound, "discussion_round": self.env.discussionRound
-        })
-        return self.internal_stance
+            timestamp = datetime.datetime.now()
+            self.internal_stance = f"[Stance generation failed for {self.name}]"
+            self.last_stance_update = timestamp
+            self.stance_history.append({
+                "timestamp": timestamp, 
+                "stance": self.internal_stance, 
+                "status": "failed",
+                "voting_round": self.env.votingRound, 
+                "discussion_round": self.env.discussionRound,
+                "error": error_msg
+            })
+            return self.internal_stance
+            
+        except Exception as e:
+            self.logger.error(f"Error in stance generation for {self.name}: {e}", exc_info=True)
+            timestamp = datetime.datetime.now()
+            self.internal_stance = f"[Stance generation error for {self.name}]"
+            self.last_stance_update = timestamp
+            self.stance_history.append({
+                "timestamp": timestamp, 
+                "stance": self.internal_stance, 
+                "status": "error",
+                "voting_round": self.env.votingRound, 
+                "discussion_round": self.env.discussionRound,
+                "error": str(e)
+            })
+            return self.internal_stance
 
     def get_internal_stance(self) -> str:
         """
         Get the current internal stance, generating one if it doesn't exist or needs update.
         """
-        if self.should_update_stance(): # Check if stance needs update
+        if self.should_update_stance(): 
             self.logger.info(f"Updating stance for {self.name} (V{self.env.votingRound}.D{self.env.discussionRound}). Last update: {self.last_stance_update}")
             self.generate_internal_stance()
-        elif self.internal_stance is None: # Should be caught by should_update_stance, but as a safeguard
+        elif self.internal_stance is None: 
             self.logger.info(f"No stance found for {self.name}, generating initial stance.")
             self.generate_internal_stance()
             
@@ -398,76 +354,37 @@ class Agent:
         if self.internal_stance is None or self.last_stance_update is None:
             return True
         
-        # Check if there's been new activity since last stance update
-        # This requires stance_history to store the rounds at which stance was generated
         if self.stance_history:
             last_recorded_activity = (self.stance_history[-1]['voting_round'], self.stance_history[-1]['discussion_round'])
             current_activity = (self.env.votingRound, self.env.discussionRound)
-            if current_activity > last_recorded_activity:
-                return True # New round activity detected
+            if self.stance_history[-1].get("status") == "test_empty_stance" and current_activity > last_recorded_activity:
+                return True
+            if current_activity > last_recorded_activity and self.stance_history[-1].get("status") != "test_empty_stance": 
+                return True 
         else:
-            # No history, but stance exists. This implies it might be the first round after init.
-            # If current rounds are > 0 and it matches initial state, it might not need update unless forced.
-            # However, if it's the very first time, it should update.
-            # This case is mostly covered by internal_stance is None.
-            # If stance_history is empty but stance exists, it means it was set without history, perhaps an initial default.
-            # Let's assume if history is empty, and rounds have started, it's safer to update.
             if self.env.votingRound > 0 or self.env.discussionRound > 0:
                  return True
 
-        return False # Default to not updating if none of the above conditions met
-
-    # Removed get_last_three_speeches - covered by PromptVariableGenerator's recent_speech_snippets
-    # Removed get_short_term_memory - specific STM components should be individual prompt variables
+        return False 
 
     def get_last_stance(self) -> str:
         """Get the most recent internal stance text."""
         return self.internal_stance if self.internal_stance else "No previous stance recorded."
 
-    # Persona and Profile Management (Example placeholders - adapt to your CSV loading)
     def load_persona_from_data(self, cardinal_data: Dict):
         """Load persona details from provided data (e.g., a row from CSV)."""
-        self.persona_internal = cardinal_data.get('internal_persona', '')
-        self.profile_public = cardinal_data.get('external_profile', '')
-        # self.background is already set in __init__
+        self.internal_persona = cardinal_data.get('Internal_Persona', '') # Corrected key
+        self.public_profile = cardinal_data.get('Public_Profile', '')   # Corrected key
         self.name = cardinal_data.get('name', self.name)
-        self.cardinal_id = cardinal_data.get('cardinal_id', self.agent_id) # Ensure cardinal_id is correctly set
+        self.cardinal_id = cardinal_data.get('Cardinal_ID', self.agent_id) # Corrected key
         self.logger.info(f"Loaded persona for {self.name} (Cardinal ID: {self.cardinal_id})")
 
-    # Example of how an agent might be updated with data post-initialization
-    # This would typically be called by the environment after loading all agent data.
-    # For now, this is a placeholder method.
     def update_agent_details(self, details: Dict):
         """Update agent details, e.g., from a central data source after init."""
-        if 'internal_persona' in details: self.persona_internal = details['internal_persona']
-        if 'profile_public' in details: self.profile_public = details['profile_public']
+        if 'internal_persona' in details: self.internal_persona = details['internal_persona'] 
+        if 'public_profile' in details: self.public_profile = details['public_profile'] 
         if 'role_tag' in details: self.role_tag = details['role_tag']
-        # Add other relevant fields as necessary
         self.logger.debug(f"Agent {self.name} details updated.")
 
     def __repr__(self):
         return f"Agent(id={self.agent_id}, name='{self.name}', role='{self.role_tag}')"
-
-    def get_recent_speech_snippets(self) -> str:
-        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
-        self.logger.warning("Agent.get_recent_speech_snippets() called directly. This should be handled by PromptVariableGenerator.")
-        return "Agent-level speech snippets placeholder."
-
-    def get_short_term_memory(self) -> str:
-        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
-        self.logger.warning("Agent.get_short_term_memory() called directly. This should be handled by PromptVariableGenerator.")
-        return "Agent-level STM placeholder."
-
-    def promptize_vote_history(self) -> str:
-        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
-        self.logger.warning("Agent.promptize_vote_history() called directly. This should be handled by PromptVariableGenerator.")
-        if self.vote_history:
-            return f"Your vote history: {len(self.vote_history)} votes cast."
-        return "No votes cast yet by you."
-
-    def promptize_voting_results_history(self) -> str:
-        """Placeholder: This logic should be in PromptVariableGenerator if used by prompts."""
-        self.logger.warning("Agent.promptize_voting_results_history() called directly. This should be handled by PromptVariableGenerator.")
-        if self.env.votingHistory:
-            return f"Overall voting history: {len(self.env.votingHistory)} rounds recorded."
-        return "No overall voting history available."

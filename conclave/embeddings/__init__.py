@@ -10,7 +10,7 @@ import time
 from typing import List, Dict, Optional, Tuple, Union
 import numpy as np
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("conclave.embeddings")
 
 
 class EmbeddingClient:

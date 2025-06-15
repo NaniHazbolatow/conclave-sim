@@ -1,0 +1,10 @@
+simulation:
+  num_cardinals: 5
+  discussion_group_size: 3
+  max_election_rounds: 5
+  discussion_length:
+    min_words: 50
+    max_words: 100
+  voting:
+    require_reasoning: true
+    supermajority_threshold: 0.667

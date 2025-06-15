@@ -9,7 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-logs/
 temp/
 
 .DS_Store
@@ -17,3 +16,5 @@ temp/
 
 # Cache files
 ~/.cache
+
+outputs/

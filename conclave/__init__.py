@@ -7,8 +7,10 @@ with AI-powered cardinal agents.
 
 __version__ = "0.1.0"
 
-from .agents.base import Agent
-from .environments.conclave_env import ConclaveEnv
-from .config.manager import get_config
+# Removed direct imports to avoid circular dependencies.
+# Modules should import directly from submodules, e.g.:
+# from conclave.agents.base import Agent
+# from conclave.config import get_config
 
-__all__ = ["Agent", "ConclaveEnv", "get_config"]
+# __all__ can be left empty or define only truly top-level exports if any.
+__all__ = []

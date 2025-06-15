@@ -45,11 +45,99 @@ except ImportError:
     HF_AVAILABLE = False
     torch = None
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("conclave.llm")
 
 
 class LLMClientBase(ABC):
     """Abstract base class for LLM clients."""
+    
+    def __init__(self, **kwargs):
+        """Initialize base LLM client with rate limiting and quality check parameters."""
+        # Rate limiting parameters
+        self.request_delay = kwargs.get('request_delay', 1.0)  # Minimum delay between requests
+        self.last_request_time = 0
+        self.min_response_length = kwargs.get('min_response_length', 20)  # Minimum response length
+        self.max_quality_retries = kwargs.get('max_quality_retries', 2)  # Max retries for quality issues
+        
+        # Quality check parameters
+        self.enable_quality_checks = kwargs.get('enable_quality_checks', True)
+        
+        # Thread lock for request timing
+        self._request_lock = threading.Lock()
+        
+    def _apply_rate_limiting(self):
+        """Apply rate limiting between requests."""
+        with self._request_lock:
+            if self.request_delay > 0:
+                time_since_last = time.time() - self.last_request_time
+                if time_since_last < self.request_delay:
+                    sleep_time = self.request_delay - time_since_last
+                    logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f}s")
+                    time.sleep(sleep_time)
+            self.last_request_time = time.time()
+    
+    def _check_response_quality(self, response: str, min_length: Optional[int] = None) -> bool:
+        """Check if response meets quality standards."""
+        if not self.enable_quality_checks:
+            return True
+        
+        min_len = min_length or self.min_response_length
+        
+        # Check length
+        if len(response.strip()) < min_len:
+            return False
+        
+        # Check for common error patterns
+        error_patterns = [
+            "Error:",
+            "I cannot",
+            "I can't",
+            "I'm unable to",
+            "I don't have access",
+            "As an AI",
+            "I'm an AI"
+        ]
+        
+        response_lower = response.lower()
+        for pattern in error_patterns:
+            if pattern.lower() in response_lower:
+                return False
+        
+        return True
+    
+    def generate_with_quality_check(self, messages: List[Dict[str, str]], min_length: Optional[int] = None, **kwargs) -> str:
+        """Generate response with rate limiting and quality checks."""
+        for attempt in range(self.max_quality_retries + 1):
+            # Apply rate limiting
+            self._apply_rate_limiting()
+            
+            # Generate response
+            response = self.prompt(messages, **kwargs)
+            
+            # Check quality
+            if self._check_response_quality(response, min_length):
+                if attempt > 0:
+                    logger.info(f"Response quality improved after {attempt} retries")
+                return response
+            
+            # If quality check failed and we have retries left
+            if attempt < self.max_quality_retries:
+                logger.warning(f"Response quality check failed (attempt {attempt + 1}), retrying with enhanced prompt")
+                
+                # Enhance the prompt for retry
+                enhanced_messages = messages.copy()
+                if enhanced_messages and enhanced_messages[-1].get("role") == "user":
+                    enhanced_messages[-1]["content"] += f"\n\nPlease provide a detailed response of at least {min_length or self.min_response_length} words. Be specific and comprehensive in your answer."
+                else:
+                    enhanced_messages.append({
+                        "role": "user", 
+                        "content": f"Please provide a detailed response of at least {min_length or self.min_response_length} words. Be specific and comprehensive in your answer."
+                    })
+                messages = enhanced_messages
+        
+        # If all retries failed, return the last response with a warning
+        logger.warning(f"Response quality checks failed after {self.max_quality_retries} retries, returning last response")
+        return response
     
     @abstractmethod
     def prompt(self, messages: List[Dict[str, str]], **kwargs) -> str:

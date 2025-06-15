@@ -18,8 +18,9 @@ import logging
 from typing import Dict, List, Optional, Union, Any
 from dataclasses import dataclass
 from enum import Enum
+from ..prompting.prompt_models import ToolDefinition # Updated import path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("conclave.llm") # NEW LOGGER - for tool calling, associated with LLM operations
 
 class ToolCallStrategy(Enum):
     """Strategy for tool calling."""
@@ -43,19 +44,12 @@ class ModelCapabilities:
     # Models known to support native tool calling well
     NATIVE_TOOL_MODELS = {
         "openai/gpt-4o-mini",
-        "openai/gpt-4o", 
-        "openai/gpt-3.5-turbo",
-        "anthropic/claude-3-haiku",
-        "anthropic/claude-3-sonnet",
-        "anthropic/claude-3-opus",
+        "anthropic/claude-sonnet-3.7",
     }
     
     # Models that have issues with native tool calling
     PROMPT_ONLY_MODELS = {
         "meta-llama/llama-3.1-8b-instruct",
-        "meta-llama/llama-3.1-70b-instruct",
-        "meta-llama/llama-3.2-8b-instruct",
-        "mistralai/mistral-nemo",
         "qwen/qwen2.5-8b-instruct",
     }
     
@@ -355,14 +349,18 @@ class RobustToolCaller:
     
     def __init__(self, llm_client, logger=None, config=None, max_retries=3, retry_delay=1.0):
         self.llm_client = llm_client
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or logging.getLogger("conclave.llm") # Ensure robust_tools uses conclave.llm logger
         self.model_name = getattr(llm_client, 'model_name', 'unknown')
         
         # Use config if provided, otherwise fall back to defaults
-        if config:
-            self.max_retries = config.get_tool_calling_max_retries()
-            self.retry_delay = config.get_tool_calling_retry_delay()
-            self.enable_fallback = config.get_tool_calling_enable_fallback()
+        if config: # config is an instance of ConfigLoader
+            # Accessing LLMConfig and then ToolCallingConfig
+            llm_config_model = config.get_llm_config() # ConfigLoader returns LLMConfig model
+            tool_calling_settings = llm_config_model.tool_calling # Access the tool_calling attribute
+
+            self.max_retries = tool_calling_settings.max_retries
+            self.retry_delay = tool_calling_settings.retry_delay
+            self.enable_fallback = tool_calling_settings.enable_fallback
         else:
             self.max_retries = max_retries
             self.retry_delay = retry_delay
@@ -426,26 +424,62 @@ class RobustToolCaller:
         
         # All attempts failed
         self.logger.error(f"All {self.max_retries + 1} attempts failed for {self.model_name}")
+        # Ensure result is defined in case all attempts fail before result is assigned
+        if 'result' not in locals() or result is None: # MODIFIED: Added 'or result is None'
+            # Create a default error result if no strategy was even attempted or if 'result' was not set
+            return ToolCallResult(
+                success=False,
+                error=f"All {self.max_retries + 1} attempts failed. No specific result from strategies.",
+                strategy_used=self.preferred_strategy 
+            )
         return ToolCallResult(
             success=False,
             error=f"All {self.max_retries + 1} attempts failed. Last error: {result.error}",
             strategy_used=result.strategy_used if 'result' in locals() else ToolCallStrategy.AUTO
         )
     
-    def _try_native_tool_calling(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
-        """Try native tool calling."""
+    def _try_native_tool_calling(self, messages: List[Dict], tool_definitions_yaml: List[Dict], tool_choice: str = None) -> ToolCallResult:
+        """Try native tool calling.
+        The 'tool_definitions_yaml' parameter is expected to be a list of tool definitions 
+        in the format loaded from prompts.yaml."""
         try:
+            native_tools = []
+            if tool_definitions_yaml:
+                for tool_def in tool_definitions_yaml:
+                    if isinstance(tool_def, dict) and tool_def.get("name") and tool_def.get("parameters"):
+                        native_tools.append({
+                            "type": "function",
+                            "function": {
+                                "name": tool_def["name"],
+                                "description": tool_def.get("description", ""), # Ensure description, even if empty
+                                "parameters": tool_def["parameters"] # Assumed to be in OpenAI format
+                            }
+                        })
+                    else:
+                        self.logger.warning(f"Skipping malformed tool definition for native calling: {tool_def}")
+            
+            if not native_tools:
+                 return ToolCallResult(
+                     success=False, 
+                     error="No valid tools provided or all definitions were malformed for native calling.",
+                     raw_response=None,
+                     strategy_used=ToolCallStrategy.NATIVE
+                 )
+
             # Prepare API parameters
             api_params = {
                 "model": self.model_name,
                 "messages": messages,
-                "tools": tools,
+                "tools": native_tools, # Use the transformed list
                 **getattr(self.llm_client, 'generation_params', {})
             }
             
             # Add tool choice if specified and model supports it
             if tool_choice and self.model_name in ModelCapabilities.NATIVE_TOOL_MODELS:
-                api_params["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
+                if any(t["function"]["name"] == tool_choice for t in native_tools):
+                    api_params["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
+                else:
+                    self.logger.warning(f"Tool choice '{tool_choice}' not found in the provided tools for native calling. API will use default behavior (auto).")
             
             # Call the API
             response = self.llm_client.client.chat.completions.create(**api_params)
@@ -453,10 +487,20 @@ class RobustToolCaller:
             
             # Check for tool calls
             if hasattr(message, 'tool_calls') and message.tool_calls:
-                tool_call = message.tool_calls[0]
+                tool_call = message.tool_calls[0] # Assuming one tool call for now
                 function_name = tool_call.function.name
-                arguments = json.loads(tool_call.function.arguments)
                 
+                try:
+                    arguments = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Failed to parse arguments from native tool call: {tool_call.function.arguments}. Error: {e}")
+                    return ToolCallResult(
+                        success=False,
+                        error=f"Failed to parse arguments from native tool call: {e}",
+                        raw_response=str(message),
+                        strategy_used=ToolCallStrategy.NATIVE
+                    )
+
                 return ToolCallResult(
                     success=True,
                     function_name=function_name,
@@ -474,33 +518,96 @@ class RobustToolCaller:
             )
             
         except Exception as e:
-            self.logger.warning(f"Native tool calling failed: {e}")
+            self.logger.warning(f"Native tool calling failed: {e}", exc_info=True)
             return ToolCallResult(
                 success=False,
                 error=f"Native tool calling error: {str(e)}",
                 strategy_used=ToolCallStrategy.NATIVE
             )
     
-    def _try_prompt_based_tool_calling(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
+    # MODIFIED: Changed from async def to def
+    # MODIFIED: Added tool_choice parameter
+    def _try_prompt_based_tool_calling(
+        self,
+        messages: List[Dict[str, str]],
+        tool_definitions: List[Union[Dict, ToolDefinition]],
+        tool_choice: Optional[str] = None, # ADDED tool_choice
+        max_retries: int = 1 
+    ) -> ToolCallResult: # MODIFIED: Return type to ToolCallResult
         """Try prompt-based tool calling."""
         try:
-            if not tools:
+            if not tool_definitions:
                 return ToolCallResult(success=False, error="No tools provided")
+
+            # Convert all ToolDefinition objects in the tools list to dictionaries
+            processed_tool_dicts = []
+            for tool_def_item in tool_definitions:
+                if isinstance(tool_def_item, ToolDefinition):
+                    processed_tool_dicts.append(tool_def_item.model_dump())
+                elif isinstance(tool_def_item, dict):
+                    processed_tool_dicts.append(tool_def_item)
+                else:
+                    self.logger.warning(f"Skipping unrecognized tool definition type: {type(tool_def_item)} in _try_prompt_based_tool_calling")
+                    continue # Or return an error if strict type checking is needed
             
-            # Use the first tool (typically there's only one)
-            tool = tools[0]
-            function = tool.get('function', {})
-            name = function.get('name', 'unknown')
-            description = function.get('description', '')
-            parameters = function.get('parameters', {})
+            if not processed_tool_dicts:
+                return ToolCallResult(success=False, error="No valid tool definitions after processing types.")
+
+            self.logger.debug(f"[_try_prompt_based_tool_calling] processed_tool_dicts: {processed_tool_dicts}")
+            self.logger.debug(f"[_try_prompt_based_tool_calling] tool_choice: {tool_choice}") # Now tool_choice is defined
             
-            # Create enhanced instructions
-            instructions = self._format_tool_instructions(name, description, parameters)
+            tool_to_call_name = None
+            if tool_choice:
+                tool_to_call_name = tool_choice
+            # Ensure processed_tool_dicts is not empty before accessing its first element
+            elif processed_tool_dicts and processed_tool_dicts[0].get('function') and isinstance(processed_tool_dicts[0].get('function'), dict) and processed_tool_dicts[0].get('function', {}).get('name'):
+                tool_to_call_name = processed_tool_dicts[0].get('function', {}).get('name')
+            elif processed_tool_dicts and processed_tool_dicts[0].get('name'): # Fallback for older flat format
+                tool_to_call_name = processed_tool_dicts[0].get('name')
+            else:
+                 self.logger.error(f"Could not determine tool to call. Tool choice: {tool_choice}, First tool: {processed_tool_dicts[0] if processed_tool_dicts else 'N/A'}")
+                 return ToolCallResult(success=False, error="Could not determine tool to call from provided definitions.")
+
+            self.logger.debug(f"[_try_prompt_based_tool_calling] tool_to_call_name: {tool_to_call_name}")
             
+            chosen_tool_def_dict = None
+            for tool_dict in processed_tool_dicts: # Iterate over list of dicts
+                current_tool_name = tool_dict.get('function', {}).get('name')
+                self.logger.debug(f"[_try_prompt_based_tool_calling] Checking tool_dict: {current_tool_name}")
+                if current_tool_name == tool_to_call_name:
+                    chosen_tool_def_dict = tool_dict # This is now guaranteed to be a dict
+                    self.logger.debug(f"[_try_prompt_based_tool_calling] Found matching tool_dict: {chosen_tool_def_dict}")
+                    break
+            
+            if not chosen_tool_def_dict:
+                available_tool_names = [t.get('function', {}).get('name') for t in processed_tool_dicts if t.get('function', {}).get('name')]
+                self.logger.error(f"[_try_prompt_based_tool_calling] Tool '{tool_to_call_name}' not found. Available tools: {available_tool_names}")
+                return ToolCallResult(success=False, error=f"Tool '{tool_to_call_name}' not found in provided tool definitions.")
+
+            # Extract arguments for _format_tool_instructions from chosen_tool_def_dict
+            name = chosen_tool_def_dict.get('function', {}).get('name')
+            description = chosen_tool_def_dict.get('function', {}).get('description', "") # Ensure description exists
+            parameters = chosen_tool_def_dict.get('function', {}).get('parameters')
+
+            if not name or parameters is None: # Parameters can be an empty dict, but not None if key 'parameters' exists
+                self.logger.error(f"Chosen tool definition dictionary is missing 'name' or 'parameters' under 'function': {chosen_tool_def_dict}")
+                return ToolCallResult(success=False, error="Malformed chosen tool definition (missing name/parameters).")
+
+            # The fourth argument to _format_tool_instructions is the tool_definition_dict itself.
+            instructions = self._format_tool_instructions(chosen_tool_def_dict) # CORRECTED: Pass the whole dict
+
             # Add instructions to the last message
             enhanced_messages = messages.copy()
-            enhanced_messages[-1]["content"] += f"\n\n{instructions}"
-            
+            if enhanced_messages and enhanced_messages[-1]["content"] is not None:
+                enhanced_messages[-1]["content"] += f"\n\n{instructions}"
+            else:
+                # Handle cases where the last message might be None or not have content
+                # This might involve appending a new user message with instructions
+                # For now, we assume the last message is a user message with content.
+                self.logger.warning("Last message content was None or not found, instructions may not be properly appended.")
+                # Fallback: append a new message if the last one is problematic
+                enhanced_messages.append({"role": "user", "content": instructions})
+
             # Generate response
             response_text = self.llm_client.generate(enhanced_messages)
             
@@ -511,23 +618,41 @@ class RobustToolCaller:
             return result
             
         except Exception as e:
-            self.logger.error(f"Prompt-based tool calling failed: {e}")
+            self.logger.error(f"Prompt-based tool calling failed: {e}", exc_info=True)
             return ToolCallResult(
                 success=False,
                 error=f"Prompt-based tool calling error: {str(e)}",
                 strategy_used=ToolCallStrategy.PROMPT_BASED
             )
     
-    def _format_tool_instructions(self, name: str, description: str, parameters: Dict) -> str:
-        """Format tool instructions for prompt-based calling."""
-        instructions = f"""IMPORTANT: You must respond with a valid JSON object in exactly this format:
+    def _format_tool_instructions(self, tool_definition_dict: Dict) -> str: # CORRECTED: Parameter name and type hint
+        """Format tool instructions for prompt-based calling using tool_definition from YAML."""
+        # Extract details from the OpenAI-compatible format
+        function_details = tool_definition_dict.get('function', {}) 
+        name = function_details.get('name')
+        description = function_details.get('description')
+        parameters = function_details.get('parameters', {})
+        
+        # Fallback for direct attributes if 'function' key is not present (older format)
+        if not name: name = tool_definition_dict.get('name') # CORRECTED
+        if not description: description = tool_definition_dict.get('description') # CORRECTED
+        if not parameters: parameters = tool_definition_dict.get('parameters', {}) # CORRECTED
+
+        # Example JSON and additional instructions might still be top-level in the original definition
+        # or could be nested if the definition itself is purely from OpenAI.
+        # For now, assume they might be top-level as per original design for prompts.yaml.
+        example_json = tool_definition_dict.get('example_json') # CORRECTED
+        additional_instructions = tool_definition_dict.get('additional_prompt_instructions') # CORRECTED
+
+
+        instructions = f'''IMPORTANT: You must respond with a valid JSON object in exactly this format:
 
 {{"function": "{name}", "parameters": {{...}}}}
 
 Tool: {name}
 Description: {description}
 
-"""
+'''
         
         if 'properties' in parameters:
             instructions += "Required parameters:\n"
@@ -538,19 +663,16 @@ Description: {description}
                 req_text = " (REQUIRED)" if is_required else " (optional)"
                 instructions += f"- {param_name} ({param_type}){req_text}: {param_desc}\n"
         
-        # Add specific examples based on function name
-        if name == "cast_vote":
-            instructions += f'\\nExample: {{\"function\": \"cast_vote\", \"parameters\": {{\"vote_cardinal_id\": 2}}}}\\n'
-        elif name == "speak_message":
-            instructions += f'\\nExample: {{\"function\": \"speak_message\", \"parameters\": {{\"message\": \"As Cardinal Newman wisely said, \'To live is to change, and to be perfect is to have changed often.\' This principle should guide our deliberations. We must find a leader who embraces necessary change while upholding our core tenets.\"}}}}\\n'
-        elif name == "generate_stance":
-            instructions += f'\nExample: {{"function": "generate_stance", "parameters": {{"stance": "I favor Cardinal Pietro Parolin due to his diplomatic experience and moderate theological approach. The Church should prioritize evangelization while addressing contemporary social challenges like climate change and economic inequality. I hold a centrist position, balancing tradition with necessary pastoral adaptation. My main concern is candidates who might polarize the College or neglect the Global South. Recent discussions about synodality have reinforced my belief that we need a collaborative leader who can bridge theological divisions within our College."}}}}\n'
-            instructions += "\nIMPORTANT FOR STANCE: Write exactly 75-125 words. Be specific about preferred candidate, Church priorities, theological position, concerns, and recent discussion influence."
+        if example_json:
+            instructions += f'\nExample: {example_json}\n'
+        
+        if additional_instructions:
+            instructions += f"\n{additional_instructions}\n"
         
         instructions += "\nRespond with ONLY the JSON object, no other text:"
         
         return instructions
-    
+
     def _add_retry_instruction(self, messages: List[Dict], attempt: int) -> List[Dict]:
         """Add retry instruction to messages when tool calling fails."""
         enhanced_messages = messages.copy()
@@ -571,3 +693,90 @@ Description: {description}
             enhanced_messages.append({"role": "user", "content": retry_text})
         
         return enhanced_messages
+
+    # MODIFIED: Changed from async def to def
+    # MODIFIED: Added tool_choice parameter
+    def _call_prompt_based_tool( 
+        self,
+        tool_definition: Union[Dict, ToolDefinition],
+        tool_arguments: Dict[str, Any],
+        original_message_content: str, 
+        tool_choice: Optional[str] = None, # ADDED tool_choice
+        max_retries: int = 1
+    ) -> ToolCallResult: # MODIFIED: Return type to ToolCallResult
+        """
+        "Calls" a tool by sending its definition and arguments back to an LLM
+        to generate a simulated tool output.
+        """
+        tool_def_actual_dict: Dict[str, Any]
+
+        if hasattr(tool_definition, 'model_dump') and callable(getattr(tool_definition, 'model_dump')):
+            logger.debug(f"Tool definition (type: {type(tool_definition)}) has model_dump. Converting to dict.")
+            tool_def_actual_dict = tool_definition.model_dump(exclude_none=True)
+        elif isinstance(tool_definition, dict):
+            logger.debug(f"Tool definition is already a dict (type: {type(tool_definition)}).")
+            tool_def_actual_dict = tool_definition
+        else:
+            logger.error(f"Tool definition is of unexpected type: {type(tool_definition)}. Value: {tool_definition!r}")
+            return {"error": f"Tool definition is of unexpected type: {type(tool_definition)}", "details": str(tool_definition)}
+
+        tool_name = tool_def_actual_dict.get("function", {}).get("name")
+        tool_description = tool_def_actual_dict.get("function", {}).get("description", "")
+        
+        if not tool_name:
+            logger.error(f"Tool name not found in processed tool definition: {tool_def_actual_dict}")
+            return {"error": "Tool name not found in processed tool definition"}
+
+        logger.info(f"Simulating call to prompt-based tool: '{tool_name}' with arguments: {tool_arguments}")
+
+        # Construct a prompt for the LLM to simulate the tool's output
+        # This prompt needs to be carefully designed.
+        # It should include the original user query context if relevant.
+        # For now, a simple prompt structure:
+        prompt_messages = [
+            {"role": "system", "content": f"""You are simulating the output of a tool.
+Original user message for context (if provided and relevant): {original_message_content}
+
+Tool Name: {tool_name}
+Tool Description: {tool_description}
+Tool Arguments Received: {json.dumps(tool_arguments)}
+
+Based on the tool's purpose and the arguments it received, generate a plausible JSON output that this tool would produce.
+The output MUST be a single JSON object. Do NOT add any explanatory text before or after the JSON.
+If the tool is supposed to indicate success or failure, include that in the JSON.
+Example of a desired output format: {{"result": "some value", "status": "success"}}
+"""}
+        ]
+
+        try:
+            for attempt in range(max_retries):
+                logger.debug(f"Attempt {attempt + 1} for prompt-based tool call simulation.")
+                
+                response_text = self.llm_client.generate_response(prompt_messages) 
+                logger.debug(f"Prompt-based LLM raw response: {response_text}")
+                
+                # Pass tool_choice to parse_tool_response if it needs it,
+                # or handle the logic of comparing parsed_result.function_name with tool_choice here.
+                # For now, JSONParser.parse_tool_response does not take tool_choice.
+                parsed_result = JSONParser.parse_tool_response(response_text)
+                
+                if parsed_result.success:
+                    # It's important that parsed_result itself is a ToolCallResult.
+                    # We are essentially returning the result of the parsing attempt.
+                    if tool_choice and parsed_result.function_name != tool_choice: 
+                        self.logger.warning(f"LLM chose function '{parsed_result.function_name}' but '{tool_choice}' was expected.")
+                        # Potentially override success or add to error if strict tool_choice is required.
+                        # For now, we'll still consider it a success if parsing worked, but log the discrepancy.
+                    
+                    # Update strategy_used as this method is specifically for prompt-based simulation
+                    parsed_result.strategy_used = ToolCallStrategy.PROMPT_BASED
+                    return parsed_result # Return the ToolCallResult from JSONParser
+                else:
+                    self.logger.error(f"Failed to parse prompt-based tool response: {parsed_result.error}")
+                    # Update strategy_used and return the failure ToolCallResult from JSONParser
+                    parsed_result.strategy_used = ToolCallStrategy.PROMPT_BASED
+                    return parsed_result
+
+        except Exception as e:
+            logger.error(f"Error during prompt-based tool call: {e}", exc_info=True)
+            return ToolCallResult(success=False, error=f"Prompt-based tool calling error: {str(e)}", strategy_used=ToolCallStrategy.PROMPT_BASED)
