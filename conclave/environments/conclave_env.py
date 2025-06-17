@@ -27,7 +27,7 @@ class ConclaveEnv:
         # print("ConclaveEnv.__init__ STARTED") # DEBUG PRINT
         self.agents: List[Agent] = [] # Type hint for self.agents
         self.viz_dir = viz_dir # Store viz_dir
-        self.votingRound = 0
+        self.votingRound = 0 # Initialize to 0. multi_round.py will set it to 1, 2, ... for each round.
         self.votingHistory = []
         self.votingBuffer = {}
         # Track individual votes: {voter_agent_id: candidate_id} for current round
@@ -63,11 +63,34 @@ class ConclaveEnv:
         self.prompt_variable_generator = PromptVariableGenerator(self, self.prompt_loader) # Pass self (env) and prompt_loader
         # print("ConclaveEnv.__init__: PromptVariableGenerator initialized.") # DEBUG PRINT
 
+        # LLM Client for Environment-level tool calls (e.g., discussion analyzer)
+        # This uses the same shared manager as agents but gets its own client instance if needed.
+        # Typically, environment tasks might use a specific configuration or even a different model.
+        # For now, we assume it can use a similar setup. Consider a separate config if distinct behavior is needed.
+        try:
+            # Pass the ConfigAdapter instance to the shared manager
+            # This client is for the environment itself, if it needs to call LLMs (e.g. for discussion_analyzer)
+            from conclave.agents.base import _shared_llm_manager # Access shared manager
+            self.env_llm_client = _shared_llm_manager.get_client(self.config_adapter)
+            from conclave.llm.robust_tools import RobustToolCaller
+            self.env_tool_caller = RobustToolCaller(self.env_llm_client, logger) # Use environment's logger
+            logger.info(f"ConclaveEnv initialized its own LLM client: {self.env_llm_client.model_name} for environment tasks.")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM client for ConclaveEnv: {e}")
+            self.env_llm_client = None
+            self.env_tool_caller = None
+
         # Extract relevant config sections for easier access
         # print("ConclaveEnv.__init__: Extracting config sections...") # DEBUG PRINT
         self.agent_config = self.app_config.agent
         self.simulation_config = self.app_config.simulation
         self.output_config = self.app_config.output
+
+        # Default number of speaking turns per agent within one run_discussion_round phase.
+        # This can be made configurable later if multi-turn discussions before analysis are needed.
+        # self.num_discussion_turns = 1 # REMOVED - simplifying to one round of speaking
+        # logger.debug(f"ConclaveEnv initialized") # Simpler log
+        logger.debug(f"ConclaveEnv initialized with app_config: {self.app_config.model_dump_json(indent=2)}") # More detailed log
 
         self.num_agents = self.simulation_config.num_cardinals # Override num_agents from constructor
         self.discussion_group_size = self.simulation_config.discussion_group_size
@@ -282,13 +305,13 @@ class ConclaveEnv:
         try:
             from ..embeddings import get_default_client
             embedding_client = get_default_client()
-            current_round = f"V{self.votingRound}.D{self.discussionRound}"
-            embedding_client.update_agent_embeddings_in_history(agents_to_update, current_round)
+            current_round_identifier = f"ER{self.votingRound}.D{self.discussionRound}" # Use ER
+            embedding_client.update_agent_embeddings_in_history(agents_to_update, current_round_identifier)
         except Exception as e:
             logger.warning(f"Failed to update embeddings after stance generation: {e}")
         
         # Log stance summary for this round
-        logger.info(f"=== STANCE UPDATE SUMMARY (V{self.votingRound}.D{self.discussionRound}) ===")
+        logger.info(f"=== STANCE UPDATE SUMMARY (ER{self.votingRound}.D{self.discussionRound}) ===") # Use ER
         for agent in agents_to_update:
             if agent.internal_stance: # Make sure agent.internal_stance is the correct attribute
                 stance_preview = str(agent.internal_stance)[:100].replace('\n', ' ')
@@ -333,13 +356,171 @@ class ConclaveEnv:
         # Temporarily comment out stance logging as get_all_stances is not yet defined
         logger.info("Stance logging in generate_initial_stances temporarily commented out.")
 
-    def _generate_discussion_group_assignments(self) -> list[list[int]]:
+    def run_discussion_round(self):
+        """Manages a single discussion round, including forming groups, collecting comments, and triggering analysis and reflection."""
+        logger.debug(f"Entering run_discussion_round for ER {self.votingRound}, Discussion {self.discussionRound + 1}") # Use ER, rephrase DP
+        self.discussionRound += 1
+        self.group_discussion_analyses = {} # Initialize for the current discussion round
+
+        if self.num_agents == 0 or self.discussion_group_size == 0:
+            self.num_discussion_groups = 0
+            logger.warning("No agents or zero group size, skipping discussion processing.")
+        else:
+            self.num_discussion_groups = (self.num_agents + self.discussion_group_size - 1) // self.discussion_group_size
+
+        logger.info(f"Starting Discussion Phase {self.discussionRound} for ER {self.votingRound} with {self.num_discussion_groups} discussion groups.") # Use ER
+
+        current_discussion_groups = self._generate_discussion_group_assignments()
+        
+        all_comments_for_phase: List[Dict[str, Any]] = [] 
+
+        if not current_discussion_groups:
+            logger.warning("No discussion groups were formed. Skipping discussion processing.")
+        else:
+            logger.info(f"Processing {len(current_discussion_groups)} discussion groups in parallel.")
+            with ThreadPoolExecutor(max_workers=self.num_discussion_groups if self.num_discussion_groups > 0 else 1) as executor:
+                futures = []
+                for group_idx, group_agent_ids in enumerate(current_discussion_groups):
+                    futures.append(executor.submit(self._process_discussion_group, group_idx, group_agent_ids, self.discussionRound))
+                
+                for future in tqdm(futures, desc=f"Processing Discussion Groups & Analyzing (ER {self.votingRound})", total=len(futures), disable=self.output_config.tqdm.disable_tqdm): # Use ER, remove DP
+                    try:
+                        group_comments = future.result() # _process_discussion_group now only returns comments
+                        if group_comments:
+                            all_comments_for_phase.extend(group_comments)
+                    except Exception as e:
+                        logger.error(f"Error processing a discussion group future: {e}", exc_info=True)
+            
+            if self.discussionHistory and len(self.discussionHistory) >= self.discussionRound:
+                 self.discussionHistory[self.discussionRound -1] = all_comments_for_phase
+            else:
+                 self.discussionHistory.append(all_comments_for_phase)
+
+            logger.info(f"All {len(current_discussion_groups)} discussion groups processed and their discussions analyzed for Discussion Phase {self.discussionRound}.")
+
+        # Analysis is now done per group within _process_discussion_group.
+        # The main analyze_discussion_round() is not called here anymore.
+
+        logger.debug("Group discussions and analyses completed. Proceeding to agent reflection.")
+        self.agents_reflect_on_discussions() # This will use self.group_discussion_analyses and self.discussionHistory
+        logger.debug(f"Exiting run_discussion_round - Round: {self.discussionRound}")
+
+    # ...existing code...
+    # REMOVED _agents_speak_in_turn as its logic is integrated into run_discussion_round
+
+    def _process_discussion_group(self, group_idx: int, group_agent_ids: List[int], current_discussion_round: int) -> List[Dict[str, Any]]:
+        """Processes a single discussion group, allowing each agent to speak, then analyzes the group's discussion. Returns list of comments from the group."""
+        group_comments_collected: List[Dict[str, Any]] = []
+        participant_names = [self.agents[agent_id].name for agent_id in group_agent_ids]
+        logger.info(f"Election Round {self.votingRound}, Discussion Group {group_idx + 1}/{self.num_discussion_groups} now speaking. Participants: {', '.join(participant_names)}") # Use ER
+
+        for agent_id in group_agent_ids:
+            agent = self.agents[agent_id]
+            try:
+                comment_data = agent.discuss(current_discussion_group_ids=group_agent_ids, current_discussion_round=current_discussion_round)
+                if comment_data and isinstance(comment_data, dict) and "message" in comment_data:
+                    group_comments_collected.append(comment_data)
+                else:
+                    logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) in group {group_idx+1} did not return a valid comment structure.")
+                    group_comments_collected.append({"agent_id": agent.agent_id, "message": "(Agent did not provide a valid comment structure)"})
+            except Exception as e:
+                logger.error(f"Critical exception during discussion processing for agent {agent.name} (ID: {agent.agent_id}): {e}", exc_info=True)
+                group_comments_collected.append({"agent_id": agent.agent_id, "message": f"[System Error: A critical error occurred while processing discussion for {agent.name}. See logs.]"})
+        
+        # Log consolidated messages for the group (existing logic)
+        if group_comments_collected:
+            log_header = f"ER {self.votingRound}, DG {group_idx + 1} (Participants: {', '.join(participant_names)}):" # Use ER
+            messages_str_parts = [log_header]
+            for comment in group_comments_collected:
+                agent_name = "UnknownAgent"
+                csv_cardinal_id = "N/A"
+                internal_agent_id = comment.get('agent_id') 
+
+                if isinstance(internal_agent_id, int) and 0 <= internal_agent_id < len(self.agents):
+                    agent = self.agents[internal_agent_id]
+                    agent_name = agent.name
+                    csv_cardinal_id = getattr(agent, 'cardinal_id', 'N/A') 
+                else:
+                    agent_name = f"Agent (Internal ID: {internal_agent_id if internal_agent_id is not None else 'N/A'})"
+                
+                message_content = comment.get('message', '[No message]')
+                messages_str_parts.append(f"  🗣️ {agent_name} (Cardinal ID: {csv_cardinal_id}):")
+                messages_str_parts.append(f"     {message_content}")
+                messages_str_parts.append("")  
+            
+            if messages_str_parts and messages_str_parts[-1] == "":
+                messages_str_parts.pop()
+            discussion_logger.info("\n".join(messages_str_parts))
+
+
+        # Analyze this group's discussion immediately
+        if group_comments_collected:
+            logger.info(f"Analyzing discussion for Group {group_idx + 1} (ER {self.votingRound}, Discussion {current_discussion_round}) immediately after their discussion.") # Use ER, rephrase DP
+            # _analyze_single_group_discussion updates self.group_discussion_analyses[group_idx]
+            self._analyze_single_group_discussion(
+                group_idx=group_idx,
+                group_agent_ids=group_agent_ids,
+                group_transcript_comments=group_comments_collected
+            )
+        else:
+            logger.info(f"No comments to analyze for Group {group_idx + 1} (ER {self.votingRound}, Discussion {current_discussion_round}).") # Use ER, rephrase DP
+            self.group_discussion_analyses[group_idx] = {"analysis_summary": "No discussion to analyze.", "raw_response": None, "error": None}
+
+
+        return group_comments_collected
+
+    def analyze_discussion_round(self):
         """
-        Creates randomized discussion groups for a full discussion cycle.
-        Ensures groups have at least 2 agents if possible, by adjusting the last two groups
-        if the last group would have only 1 agent.
+        Analyzes discussions for all groups. 
+        This method is now primarily for manual use or if a full re-analysis is needed.
+        The primary analysis path is via _analyze_single_group_discussion called from _process_discussion_group.
+        It populates self.group_discussion_analyses.
         """
-        # Use discussion_group_size from instance variable (includes testing group overrides)
+        logger.info(f"Executing analyze_discussion_round for ER {self.votingRound}, Discussion {self.discussionRound}.") # Use ER, rephrase DP
+        self.group_discussion_analyses = {} # Reset/initialize
+
+        current_round_index = self.discussionRound - 1
+        if not (0 <= current_round_index < len(self.discussionHistory)):
+            logger.error(f"No discussion history found for round {self.discussionRound}. Cannot analyze.")
+            return
+        
+        all_comments_this_phase = self.discussionHistory[current_round_index]
+        if not all_comments_this_phase:
+            logger.warning(f"No comments recorded in discussion history for round {self.discussionRound}. Nothing to analyze.")
+            return
+
+        if not hasattr(self, '_last_discussion_groups') or not self._last_discussion_groups:
+            logger.error("No discussion group assignments found (_last_discussion_groups). Cannot perform analysis.")
+            return
+
+        logger.info(f"Analyzing discussions for {len(self._last_discussion_groups)} groups using comments from Discussion Phase {self.discussionRound}.")
+
+        for group_idx, group_agent_ids in enumerate(self._last_discussion_groups):
+            # Filter comments for the current group from all_comments_this_phase
+            group_transcript_comments = [
+                comment for comment in all_comments_this_phase 
+                if isinstance(comment.get('agent_id'), int) and self.agents[comment['agent_id']].agent_id in group_agent_ids
+            ]
+            
+            if not group_transcript_comments:
+                logger.info(f"No transcript found for group {group_idx + 1}. Skipping analysis for this group.")
+                self.group_discussion_analyses[group_idx] = {"analysis_summary": "No transcript for this group.", "raw_response": None, "error": "No transcript"}
+                continue
+            
+            self._analyze_single_group_discussion(group_idx, group_agent_ids, group_transcript_comments)
+        
+        logger.info(f"Finished analyze_discussion_round for Discussion Phase {self.discussionRound}.")
+        # Results are in self.group_discussion_analyses
+
+    def _generate_discussion_group_assignments(self) -> List[List[int]]:
+        logger.debug("Entering _generate_discussion_group_assignments")
+
+        # Creates randomized discussion groups for a full discussion cycle.
+        # Ensures groups have at least 2 agents if possible, by adjusting the last two groups
+        # if the last group would have only 1 agent.
+        # Stores the assignments in self._last_discussion_groups for later reference.
+        # Returns a list of lists, where each inner list contains agent_ids for a group.
+
         discussion_group_size = self.discussion_group_size
         
         if discussion_group_size < 2:
@@ -351,6 +532,8 @@ class ConclaveEnv:
 
         agent_ids = list(range(len(self.agents)))
         if not agent_ids:
+            logger.warning("No agents available to form discussion groups.")
+            self._last_discussion_groups = []
             return []
             
         random.shuffle(agent_ids)
@@ -362,434 +545,308 @@ class ConclaveEnv:
             groups.append(agent_ids[i : i + discussion_group_size])
             i += discussion_group_size
 
-        # Adjustment: if the last group has 1 agent and there's more than one group,
-        # move one agent from the second-to-last group to the last group.
         if len(groups) > 1 and len(groups[-1]) == 1:
-            if len(groups[-2]) > 0: # True if group_size >= 2 for group[-2] formation
+            if len(groups[-2]) > 0: 
                 element_to_move = groups[-2].pop()
                 groups[-1].insert(0, element_to_move)
         
-        return [g for g in groups if g] # Filter out any empty groups
+        self._last_discussion_groups = [g for g in groups if g] 
+        logger.debug(f"Generated discussion groups (list of lists): {self._last_discussion_groups}")
+        logger.debug("Exiting _generate_discussion_group_assignments")
+        return self._last_discussion_groups
 
-    def _process_discussion_group(self, group_idx: int, group_agent_ids: List[int], current_discussion_round: int): # Added current_discussion_round
-        """Processes a single discussion group, allowing each agent to speak."""
-        group_comments = []
-        # Create a list of agent names for logging
-        participant_names = [self.agents[agent_id].name for agent_id in group_agent_ids]
-        logger.info(f"Voting Round {self.votingRound}, Discussion Group {group_idx + 1}/{self.num_discussion_groups} now speaking. Participants: {', '.join(participant_names)}")
+    def _analyze_single_group_discussion(self, group_idx: int, group_agent_ids: List[int], group_transcript_comments: List[Dict[str, Any]]):
+        """Analyzes a single group's discussion transcript and stores the result."""
+        # ... (existing logic for formatting transcript)
+        formatted_transcript = []
+        for comment_data in group_transcript_comments:
+            agent_id = comment_data.get('agent_id')
+            message = comment_data.get('message', '[message not found]')
+            agent_name = f"Agent {agent_id}"
+            if isinstance(agent_id, int) and 0 <= agent_id < len(self.agents):
+                agent_name = self.agents[agent_id].name
+            formatted_transcript.append(f"{agent_name} (ID: {agent_id}): {message}")
+        full_transcript_str = "\n".join(formatted_transcript)
 
-        for agent_id in group_agent_ids:
-            agent = self.agents[agent_id]
-            try:
-                # Pass current_discussion_round to agent.discuss
-                comment_data = agent.discuss(current_discussion_group_ids=group_agent_ids, current_discussion_round=current_discussion_round)
-                if comment_data and isinstance(comment_data, dict) and "message" in comment_data:
-                    group_comments.append(comment_data)
-                    # REMOVED: discussion_logger.info(f"VR {self.votingRound}, DG {group_idx + 1}, Agent {agent.name} (ID: {agent_id}): {comment_data['message']}")
-                    # self.log_discussion_message(agent_id, comment_data["message"]) # Handled by agent's logger
-                else:
-                    logger.warning(f"Agent {agent.name} (ID: {agent_id}) in group {group_idx+1} did not return a valid comment structure.")
-                    group_comments.append({"agent_id": agent_id, "message": "(Agent did not provide a valid comment structure)"})
-            except Exception as e:
-                logger.error(f"Critical exception during discussion processing for agent {agent.name} (ID: {agent_id}): {e}", exc_info=True)
-                # Add a placeholder comment indicating the error
-                group_comments.append({"agent_id": agent_id, "message": f"[System Error: A critical error occurred while processing discussion for {agent.name}. See logs.]"})
+        if not full_transcript_str.strip():
+            logger.warning(f"Group {group_idx + 1} had an empty transcript. Storing empty analysis.")
+            self.group_discussion_analyses[group_idx] = {
+                "analysis_summary": "Discussion was empty or resulted in an empty transcript.",
+                "raw_response": None,
+                "error": "Empty transcript"
+            }
+            return
+        # ... (existing logic for preparing prompt variables)
+        prompt_vars = self.prompt_variable_generator.generate_prompt_variables_for_group_analysis(
+            group_id=group_idx,
+            group_agent_ids=group_agent_ids,
+            discussion_transcript=full_transcript_str,
+            # current_round=self.votingRound # Or self.discussionRound, ensure consistency
+        )
+        # Ensure round_id is available if the template specifically uses it.
+        # It seems discussion_round_num is the intended variable from the generator.
+        # If 'round_id' is strictly required by the template, alias it:
+        # if 'round_id' not in prompt_vars:
+        #     prompt_vars['round_id'] = prompt_vars.get('discussion_round_num', self.discussionRound) 
+
+        # The variable 'group_transcript_text' is expected by the prompt template.
+        # The PromptVariableGenerator now generates 'group_transcript_text' directly.
+        # Ensure it's correctly passed or aliased if the generator uses a different key.
+        if 'group_transcript_text' not in prompt_vars and 'discussion_transcript' in prompt_vars:
+            prompt_vars['group_transcript_text'] = prompt_vars['discussion_transcript']
+        elif 'group_transcript_text' not in prompt_vars:
+            # Fallback if neither is present, though the generator should provide it.
+            logger.warning("Missing 'group_transcript_text' and 'discussion_transcript' in prompt_vars for discussion_analyzer. Using empty string.")
+            prompt_vars['group_transcript_text'] = ""
+
+        analysis_prompt = self.prompt_loader.get_prompt_template("discussion_analyzer").format(**prompt_vars)
         
-        # Consolidate and log all comments for the group
-        if group_comments:
-            log_header = f"VR {self.votingRound}, DG {group_idx + 1} (Participants: {', '.join(participant_names)}):"
-            messages_str_parts = [log_header]
-            for comment in group_comments:
-                agent_name = "UnknownAgent"
-                csv_cardinal_id = "N/A"
-                internal_agent_id = comment.get('agent_id') # Get internal agent_id from comment
+        # self.logger.debug(f"LLM Request: Discussion Analysis prompt for Group {group_idx + 1}:\\n{analysis_prompt}")
 
-                if isinstance(internal_agent_id, int) and 0 <= internal_agent_id < len(self.agents):
-                    agent = self.agents[internal_agent_id]
-                    agent_name = agent.name
-                    csv_cardinal_id = getattr(agent, 'cardinal_id', 'N/A') # Get Cardinal_ID from agent object
-                else:
-                    agent_name = f"Agent (Internal ID: {internal_agent_id if internal_agent_id is not None else 'N/A'})"
+        analyze_tool_def = self.prompt_loader.get_tool_definition("discussion_analyzer") # Corrected tool name
+        if not analyze_tool_def:
+            # ... (existing error handling) ...
+            logger.error(f"Tool definition for 'discussion_analyzer' not found.") # Corrected tool name
+            self.group_discussion_analyses[group_idx] = {"analysis_summary": "Error: Tool definition not found.", "raw_response": None, "error": "Tool definition missing"}
+            return
+
+        try:
+            # ... (existing tool calling logic) ...
+            messages = [{"role": "user", "content": analysis_prompt}]
+            # Ensure env_tool_caller is initialized and available
+            if not self.env_tool_caller:
+                raise ValueError("Environment tool caller (env_tool_caller) not initialized.")
+
+            result = self.env_tool_caller.call_tool(messages, [analyze_tool_def], tool_choice="discussion_analyzer") # Corrected tool name
+
+            if result.success and result.arguments:
+                # The tool 'discussion_analyzer' is expected to return key_points, speakers, overall_tone.
+                # We need to construct a summary string from these for analysis_summary.
+                key_points = result.arguments.get("key_points", [])
+                speakers = result.arguments.get("speakers", [])
+                overall_tone = result.arguments.get("overall_tone", "unknown")
                 
-                # Format with nice indicators and spacing
-                message_content = comment.get('message', '[No message]')
-                messages_str_parts.append(f"  🗣️ {agent_name} (Cardinal ID: {csv_cardinal_id}):")
-                messages_str_parts.append(f"     {message_content}")
-                messages_str_parts.append("")  # Add blank line between speeches
-            
-            # Remove the last empty line if it exists
-            if messages_str_parts and messages_str_parts[-1] == "":
-                messages_str_parts.pop()
-            
-            consolidated_message = "\n".join(messages_str_parts)
-            discussion_logger.info(consolidated_message)
+                summary_parts = [
+                    f"Overall Tone: {overall_tone.capitalize()}"
+                ]
+                if key_points:
+                    summary_parts.append("Key Points:")
+                    for i, point in enumerate(key_points):
+                        speaker_info = f" (Speaker: {speakers[i]})" if i < len(speakers) and speakers[i] else ""
+                        summary_parts.append(f"  - {point}{speaker_info}")
+                else:
+                    summary_parts.append("No specific key points extracted.")
+                
+                summary = "\n".join(summary_parts)
+                
+                self.group_discussion_analyses[group_idx] = {
+                    "analysis_summary": summary,
+                    "raw_response": result.raw_response, # Store raw LLM response if available
+                    "error": None
+                }
+                logger.info(f"Group {group_idx + 1} discussion analysis successful. Summary:\\n{summary}")
+            else:
+                # ... (existing error handling) ...
+                error_msg = result.error if result.error else "Unknown tool calling failure during analysis."
+                logger.error(f"Tool calling failed for group {group_idx + 1} discussion analysis: {error_msg}")
+                self.group_discussion_analyses[group_idx] = {"analysis_summary": f"Failed: {error_msg}", "raw_response": result.raw_response_content, "error": error_msg}
+        except Exception as e:
+            # ... (existing error handling) ...
+            logger.error(f"Exception during discussion analysis for group {group_idx + 1}: {e}", exc_info=True)
+            self.group_discussion_analyses[group_idx] = {"analysis_summary": f"Exception: {e}", "raw_response": None, "error": str(e)}
 
-        return group_comments
+    def agents_reflect_on_discussions(self):
+        """Triggers reflection for each agent based on their group's discussion and analysis."""
+        logger.info(f"Starting agent reflection phase for ER {self.votingRound}, Discussion {self.discussionRound}.") # Use ER, rephrase DP
 
-    def run_discussion_round(self):
-        """Manages a single discussion round, including forming groups and collecting comments."""
-        self.discussionRound += 1 # Increment discussion round for the current voting round
-        
-        # Correctly determine num_discussion_groups based on the number of agents and group size
-        # This should be calculated based on the actual number of agents and the configured group size.
-        if self.num_agents == 0 or self.discussion_group_size == 0: # Prevent division by zero
-            self.num_discussion_groups = 0
+        current_round_index = self.discussionRound - 1
+        if not (0 <= current_round_index < len(self.discussionHistory)):
+            logger.error(f"No discussion history found for round {self.discussionRound}. Cannot provide transcripts for reflection.")
+            # Fallback: agents reflect without full transcript if history is missing
+            all_comments_this_phase = []
         else:
-            self.num_discussion_groups = (self.num_agents + self.discussion_group_size - 1) // self.discussion_group_size
+            all_comments_this_phase = self.discussionHistory[current_round_index]
 
-        logger.info(f"Starting Discussion Phase {self.discussionRound} (part of Voting Round {self.votingRound}) with {self.num_discussion_groups} discussion groups processed in parallel.")
+        if not hasattr(self, '_last_discussion_groups') or not self._last_discussion_groups:
+            logger.error("No discussion group assignments (_last_discussion_groups) found. Cannot perform reflection accurately.")
+            # Agents might still reflect but without specific group context.
+            # This case should ideally not happen if run_discussion_round executed correctly
 
-        discussion_groups = self._generate_discussion_group_assignments() # Corrected method name
-        all_comments_for_phase = []
-
-        with ThreadPoolExecutor(max_workers=self.num_discussion_groups) as executor:
-            futures = []
-            for group_idx, group_agent_ids in enumerate(discussion_groups):
-                # Pass the current discussionRound to _process_discussion_group
-                futures.append(executor.submit(self._process_discussion_group, group_idx, group_agent_ids, self.discussionRound))
-            
-            for future in tqdm(futures, desc=f"Processing Discussion Groups (VR {self.votingRound}, DP {self.discussionRound})", total=len(futures), disable=self.output_config.tqdm.disable_tqdm):
-                try:
-                    group_comments = future.result()
-                    if group_comments:
-                        all_comments_for_phase.extend(group_comments)
-                except Exception as e:
-                    logger.error(f"Error processing a discussion group: {e}", exc_info=True)
+        # Create a mapping from agent_id to their group_idx for quick lookup
+        agent_to_group_map: Dict[int, int] = {}
+        if hasattr(self, '_last_discussion_groups'):
+            for idx, group_list in enumerate(self._last_discussion_groups):
+                for agent_id_in_group in group_list:
+                    agent_to_group_map[agent_id_in_group] = idx
         
-        if all_comments_for_phase:
-            self.discussionHistory.append(all_comments_for_phase)
-            participating_agent_ids_this_round = list(set([comment['agent_id'] for comment in all_comments_for_phase]))
-            for agent_id in participating_agent_ids_this_round:
-                if agent_id not in self.agent_discussion_participation:
-                    self.agent_discussion_participation[agent_id] = []
-                self.agent_discussion_participation[agent_id].append(self.discussionRound) 
+        agents_to_reflect = self.agents # All agents reflect
 
-        logger.info(f"Discussion Phase {self.discussionRound} (Voting Round {self.votingRound}) completed with {len(all_comments_for_phase)} comments.")
+        with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_reflect))) as executor:
+            futures = []
+            for agent in agents_to_reflect:
+                group_idx = agent_to_group_map.get(agent.agent_id)
+                analysis_summary_for_agent = "No analysis was available for your group." # Default
+                group_transcript_for_agent_str = "No specific group transcript available for this round." # Default
 
-        # Update internal stances after discussion round
-        logger.info(f"Updating internal stances for all agents after discussion phase {self.discussionRound}.")
-        self.update_internal_stances()
+                if group_idx is not None:
+                    analysis_data = self.group_discussion_analyses.get(group_idx)
+                    if analysis_data:
+                        if analysis_data.get("error") is None and analysis_data.get("analysis_summary"):
+                            analysis_summary_for_agent = analysis_data["analysis_summary"]
+                            logger.debug(f"Agent {agent.name} (ID: {agent.agent_id}) in Group {group_idx + 1} will use analysis: {analysis_summary_for_agent[:100]}...")
+                        else:
+                            # Analysis failed or produced no summary, use default. Log the specific error if present.
+                            error_detail = analysis_data.get("error", "unknown reason")
+                            logger.warning(f"Analysis for Group {group_idx + 1} (Agent {agent.name}) was not successful or summary empty (error: {error_detail}). Agent will reflect with default message.")
+                            # analysis_summary_for_agent remains the default "No analysis was available for your group."
+                    else: # Should not happen if _process_discussion_group always populates it
+                        logger.warning(f"No analysis data structure found for Group {group_idx + 1} (Agent {agent.name}). Agent will reflect with default message.")
+                        # analysis_summary_for_agent remains the default "No analysis was available for your group."
 
-    def run_voting_round(self) -> bool:
-        """
-        Manages a single voting round, including collecting votes and checking for a winner.
-        Returns True if a winner is found, False otherwise.
-        """
-        self.votingBuffer.clear()  # Clear buffer for the new round
-        self.individual_votes_buffer.clear()  # Clear individual votes buffer
-        logger.info(f"\\n--- Voting Phase (Round {self.votingRound}) ---")
+                    if all_comments_this_phase and hasattr(self, '_last_discussion_groups') and group_idx < len(self._last_discussion_groups):
+                        group_agent_ids_for_transcript = self._last_discussion_groups[group_idx]
+                        comments_for_agent_group = [
+                            c for c in all_comments_this_phase 
+                            if isinstance(c.get('agent_id'), int) and c['agent_id'] in group_agent_ids_for_transcript
+                        ]
+                        
+                        formatted_transcript_list = []
+                        for comment_data in comments_for_agent_group:
+                            comment_agent_id = comment_data.get('agent_id')
+                            message = comment_data.get('message', '[message not found]')
+                            comment_agent_name = f"Agent {comment_agent_id}"
+                            if isinstance(comment_agent_id, int) and 0 <= comment_agent_id < len(self.agents):
+                                comment_agent_name = self.agents[comment_agent_id].name
+                            formatted_transcript_list.append(f"{comment_agent_name} (ID: {comment_agent_id}): {message}")
+                        group_transcript_for_agent_str = "\n".join(formatted_transcript_list)
+                        if not group_transcript_for_agent_str.strip():
+                             group_transcript_for_agent_str = "(No discussion took place in your group or messages were empty.)"
+                else:
+                    logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) was not found in any discussion group for round {self.discussionRound}. Reflecting generally.")
+                    # analysis_summary_for_agent and group_transcript_for_agent_str remain defaults
 
-        # Use ThreadPoolExecutor to parallelize vote casting
-        # Each agent's cast_vote method will handle LLM calls and retries,
-        # then call self.cast_vote(chosen_candidate_id, agent_id) to record the vote.
-        futures = []
-        with ThreadPoolExecutor(max_workers=self.num_agents) as executor:
-            for agent in self.agents:
-                # agent.cast_vote is expected to return True on success, False on failure
-                # and to call self.cast_vote(chosen_candidate_id, agent.agent_id) internally
-                futures.append(executor.submit(agent.cast_vote, self.votingRound))
-            
-            successful_votes = 0
-            failed_votes = 0
-            for future in tqdm(futures, desc=f"Collecting Votes (Round {self.votingRound})", total=len(futures), disable=self.output_config.tqdm.disable_tqdm):
+                # Call reflect_on_discussion with the correct arguments
+                futures.append(executor.submit(agent.reflect_on_discussion, 
+                                               analysis_summary_for_agent, 
+                                               group_transcript_for_agent_str, 
+                                               self.discussionRound))
+
+            for future in tqdm(futures, desc=f"Agents Reflecting (ER {self.votingRound})", total=len(futures), disable=not self.output_config.logging.performance_logging): # Use ER, remove DP
                 try:
-                    if future.result(): # result() will re-raise exceptions from agent.cast_vote
-                        successful_votes += 1
-                    else:
-                        failed_votes += 1 # Agent explicitly returned False (e.g. max retries for LLM)
+                    future.result() 
                 except Exception as e:
-                    logger.error(f"Exception during agent vote processing: {e}", exc_info=True)
-                    failed_votes +=1
+                    logger.error(f"Error during an agent's reflection process: {e}", exc_info=True)
 
-            logger.info(f"Vote collection summary for Round {self.votingRound}: {successful_votes} successful, {failed_votes} failed attempts.")
+        logger.info(f"Agent reflection phase completed for Discussion Phase {self.discussionRound}.")
+
+    def run_voting_round(self) -> tuple[Optional[int], Dict[int, int]]:
+        """Runs a single voting round, collects votes, tallies them, and checks for a winner.
+        Assumes self.votingRound has been set by the caller to the current election round number.
+        """
+        # self.votingRound += 1 # REMOVED: votingRound should be managed by the main simulation loop (e.g., in multi_round.py)
+        logger.info(f"Starting Election Round {self.votingRound}")
+
+        self.votingBuffer = {}  # Reset for current round: {candidate_id: vote_count}
+        self.individual_votes_buffer = {}  # Reset for current round: {voter_agent_id: candidate_id}
+        self.voting_participation[self.votingRound] = [] # Track who voted this round
+
+        agents_to_vote = self.agents
+        if not agents_to_vote:
+            logger.warning("No agents available to cast votes.")
+            self.votingHistory.append(self.votingBuffer.copy())
+            self.individual_votes_history.append(self.individual_votes_buffer.copy())
+            return None, {}
+
+        logger.info(f"Collecting votes from {len(agents_to_vote)} agents for Election Round {self.votingRound}...") # Use ER
+        with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_vote))) as executor:
+            # Future -> agent_id mapping to correctly attribute votes even if order changes
+            future_to_agent_id = {executor.submit(agent.cast_vote, self.votingRound): agent.agent_id for agent in agents_to_vote}
+            
+            for future in tqdm(future_to_agent_id.keys(), desc=f"Collecting Votes (ER {self.votingRound})", total=len(agents_to_vote), disable=not self.output_config.logging.performance_logging): # Use ER
+                voter_agent_id = future_to_agent_id[future]
+                try:
+                    voted_for_candidate_id = future.result()
+                    if voted_for_candidate_id is not None and self.is_valid_vote_candidate(voted_for_candidate_id):
+                        self.individual_votes_buffer[voter_agent_id] = voted_for_candidate_id
+                        self.voting_participation[self.votingRound].append(voter_agent_id)
+                        logger.debug(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) voted for Agent {voted_for_candidate_id} (Candidate ID: {self.agents[voted_for_candidate_id].cardinal_id if hasattr(self.agents[voted_for_candidate_id], 'cardinal_id') else voted_for_candidate_id}).")
+                    elif voted_for_candidate_id is not None:
+                        logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) cast an invalid vote for candidate ID {voted_for_candidate_id}. Vote ignored.")
+                    else:
+                        logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) abstained or failed to vote.")
+                except Exception as e:
+                    logger.error(f"Error collecting vote from Agent ID {voter_agent_id} ({self.agents[voter_agent_id].name}): {e}", exc_info=True)
+
+        # Tally votes from individual_votes_buffer
+        for voter_id, candidate_id in self.individual_votes_buffer.items():
+            self.votingBuffer[candidate_id] = self.votingBuffer.get(candidate_id, 0) + 1
 
         self.votingHistory.append(self.votingBuffer.copy())
         self.individual_votes_history.append(self.individual_votes_buffer.copy())
-        
-        # SANITY CHECK: Ensure vote count matches agent count if all agents succeeded
-        # Note: votingBuffer is populated by agent.cast_vote -> self.env.cast_vote
-        # The number of entries in votingBuffer might not directly map to successful_votes
-        # if an agent fails before calling self.env.cast_vote.
-        # A better check is on the number of votes recorded in the buffer.
-        
-        # Let's count how many agents actually recorded a vote in the buffer for this round.
-        # This requires knowing which votes in votingBuffer belong to the current round.
-        # Since votingBuffer is cleared and then populated, its current state IS the current round's votes.
-        
-        actual_votes_recorded_in_buffer = 0
-        # The votingBuffer stores {candidate_id: [voter_agent_id_1, voter_agent_id_2,...]}
-        # Or, if it's {candidate_id: num_votes}, then sum(self.votingBuffer.values())
-        # Based on `self.env.cast_vote`, it's:
-        # self.votingBuffer[candidate_id] = self.votingBuffer.get(candidate_id, 0) + 1
-        
-        total_votes_in_buffer_for_round = sum(self.votingBuffer.values())
 
-        logger.info(f"=== VOTING SANITY CHECK (Round {self.votingRound}) ===")
-        logger.info(f"Total votes recorded in buffer for this round: {total_votes_in_buffer_for_round}")
-        logger.info(f"Expected votes (num_agents): {self.num_agents}")
-        
-        if total_votes_in_buffer_for_round != self.num_agents:
-            logger.warning(f"VOTE COUNT MISMATCH in buffer: Expected {self.num_agents}, got {total_votes_in_buffer_for_round}. This may be due to voting failures.")
-            # Potentially log which agents failed to register a vote if that info is available
+        logger.info(f"--- Election Round {self.votingRound} Results ---")
+        print(f"\n--- Election Round {self.votingRound} Results ---") # ADDED
+        if not self.votingBuffer:
+            logger.info("No votes were cast or tallied in this round.")
+            print("No votes were cast or tallied in this round.") # ADDED
+        else:
+            # Sort results by vote count for logging
+            sorted_vote_counts = sorted(self.votingBuffer.items(), key=lambda item: item[1], reverse=True)
+            for candidate_id, votes in sorted_vote_counts:
+                candidate_name = self.agents[candidate_id].name if candidate_id < len(self.agents) else f"Unknown Candidate ({candidate_id})"
+                log_message = f"  Candidate {candidate_name}: {votes} votes"
+                logger.info(log_message)
+                print(log_message) # ADDED
 
         # Check for winner
-        if not self.votingBuffer:
-            logger.warning(f"No votes were cast in round {self.votingRound}. Cannot determine a winner.")
-            # Decide how to handle this - e.g., continue to next round or end simulation
-            return False # No winner
-
-        # Sort candidates by votes
-        # self.votingBuffer is {candidate_id: num_votes}
-        sorted_votes = sorted(self.votingBuffer.items(), key=lambda item: item[1], reverse=True)
-
-        if not sorted_votes:
-            logger.warning(f"Vote buffer was non-empty but produced no sorted results in round {self.votingRound}.")
-            return False # No winner
-
-        # Log vote counts for the round
-        logger.info(f"--- Vote Counts (Round {self.votingRound}) ---")
-        for candidate_id, num_votes in sorted_votes:
-            candidate_name = self.agents[candidate_id].name if candidate_id < len(self.agents) and candidate_id != -1 else f"InvalidCandidateID ({candidate_id})"
-            if candidate_id == -1: candidate_name = "Abstention"
-            logger.info(f"  {candidate_name}: {num_votes} votes")
-            print(f"  {candidate_name}: {num_votes} votes") # Print to terminal
-
-        # Check for supermajority
-        top_candidate_id, top_votes = sorted_votes[0]
-        
-        # Ensure total_votes_in_buffer_for_round is not zero to avoid DivisionByZeroError
-        if total_votes_in_buffer_for_round == 0:
-            logger.warning(f"Total votes in buffer is zero for round {self.votingRound}. Cannot calculate supermajority.")
-            return False # No winner, or handle as per simulation rules
-
-        if (top_votes / total_votes_in_buffer_for_round) >= self.supermajority_threshold:
-            winner_name = self.agents[top_candidate_id].name if top_candidate_id < len(self.agents) else f"InvalidCandidateID ({top_candidate_id})"
-            logger.info(f"\\n🎉 Winner found in Round {self.votingRound}! {winner_name} wins with {top_votes} votes ({top_votes/total_votes_in_buffer_for_round*100:.2f}% of votes).")
-            self.winner = top_candidate_id
-            return True # Winner found
-
-        logger.info(f"No winner yet in Round {self.votingRound}. Top candidate has {top_votes} votes ({top_votes/total_votes_in_buffer_for_round*100:.2f}%). Threshold: {self.supermajority_threshold*100:.2f}%")
-        
-        # Update candidate list if dynamic candidate elimination is implemented
-        # self.update_candidate_list_after_voting() # Example placeholder
-
-        return False # No winner yet
-
-    def cast_vote(self, candidate_id: int, voter_agent_id: int):
-        """
-        Records a vote from an agent. Called by the agent itself after deciding.
-        Args:
-            candidate_id: The agent_id of the candidate being voted for.
-                          -1 can represent abstention or an invalid vote.
-            voter_agent_id: The agent_id of the agent casting the vote.
-        """
-        if candidate_id == -1: # Abstention or invalid vote from LLM
-            logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) abstained or cast an invalid vote.")
-            # Decide how to record abstentions, e.g., in a separate counter or ignore for majority calc
-            # For now, we'll count it towards the total votes if it's explicitly cast as -1
-            # but it won't win. If it's not added to votingBuffer, total_votes_in_buffer_for_round will be lower.
-            # Let's assume for now that an abstention means they don't add to any candidate's tally.
-            # If an agent fails to produce a vote, they also don't add to the tally.
-            # The current logic for total_votes_in_buffer_for_round correctly sums actual candidate votes.
-            return
-
-        if candidate_id not in self.candidate_ids and candidate_id not in self.current_candidates:
-             logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) voted for {self.agents[candidate_id].name} (ID: {candidate_id}) who is not a current candidate. Vote ignored.")
-             return
-
-
-        # Ensure candidate_id is a valid agent ID (and a candidate)
-        if candidate_id < 0 or candidate_id >= len(self.agents):
-            logger.error(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) tried to vote for invalid candidate_id: {candidate_id}. Vote ignored.")
-            return
-
-        # Record the vote in the buffer for the current round
-        # self.votingBuffer stores: {candidate_agent_id: number_of_votes}
-        self.votingBuffer[candidate_id] = self.votingBuffer.get(candidate_id, 0) + 1
-        # Track individual vote: {voter_agent_id: candidate_id}
-        self.individual_votes_buffer[voter_agent_id] = candidate_id
-        logger.debug(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) cast vote for {self.agents[candidate_id].name} (ID: {candidate_id}). Current buffer: {self.votingBuffer}")
-
-    def get_agent_stance_distance(self, agent1_id: int, agent2_id: int, round_key: str = None, distance_metric: str = "cosine") -> float:
-        """
-        Calculate the distance between two agents' stances.
-        
-        Args:
-            agent1_id: ID of the first agent
-            agent2_id: ID of the second agent
-            round_key: Specific round to compare (e.g., "initial", "V1.D2"). If None, uses latest stance.
-            distance_metric: Type of distance ("cosine", "euclidean", "manhattan")
+        # Use number of actual voters for threshold calculation
+        num_voters_this_round = len(self.voting_participation.get(self.votingRound, []))
+        if num_voters_this_round == 0:
+            logger.info("No voters participated in this round. Cannot determine supermajority.")
+            # Handle case with no voters - perhaps no winner or specific logic
+        else:
+            votes_needed_for_supermajority = np.ceil(self.supermajority_threshold * num_voters_this_round)
+            logger.info(f"Supermajority threshold: {self.supermajority_threshold * 100}%. Votes needed: {votes_needed_for_supermajority} out of {num_voters_this_round} voters this round.")
             
-        Returns:
-            Distance between the two agents' stances
-        """
-        if agent1_id >= len(self.agents) or agent2_id >= len(self.agents):
-            raise ValueError("Invalid agent ID")
-        
-        agent1 = self.agents[agent1_id]
-        agent2 = self.agents[agent2_id]
-        
-        try:
-            from ..embeddings import get_default_client
-            embedding_client = get_default_client()
-            
-            # Get embeddings for both agents
-            embedding1 = None
-            embedding2 = None
-            
-            if round_key:
-                # Use specific round if available
-                if hasattr(agent1, 'embedding_history') and round_key in agent1.embedding_history:
-                    embedding1 = agent1.embedding_history[round_key]
-                if hasattr(agent2, 'embedding_history') and round_key in agent2.embedding_history:
-                    embedding2 = agent2.embedding_history[round_key]
-            
-            # Fallback to current stance if no embedding history
-            if embedding1 is None and hasattr(agent1, 'internal_stance') and agent1.internal_stance:
-                embedding1 = embedding_client.get_embedding(agent1.internal_stance)
-            if embedding2 is None and hasattr(agent2, 'internal_stance') and agent2.internal_stance:
-                embedding2 = embedding_client.get_embedding(agent2.internal_stance)
-            
-            if embedding1 is None or embedding2 is None:
-                raise ValueError("Could not get stance embeddings for both agents")
-            
-            # Calculate distance based on metric
-            if distance_metric == "cosine":
-                return embedding_client.cosine_distance(embedding1, embedding2)
-            elif distance_metric == "euclidean":
-                return embedding_client.euclidean_distance(embedding1, embedding2)
-            elif distance_metric == "manhattan":
-                return embedding_client.manhattan_distance(embedding1, embedding2)
+            # ADDED: Debug logging for winner determination
+            logger.info(f"DEBUG: num_voters_this_round = {num_voters_this_round}")
+            logger.info(f"DEBUG: supermajority_threshold = {self.supermajority_threshold}")
+            logger.info(f"DEBUG: votes_needed_for_supermajority = {votes_needed_for_supermajority}")
+            logger.info(f"DEBUG: votingBuffer = {self.votingBuffer}")
+
+            for candidate_id, votes in self.votingBuffer.items():
+                logger.info(f"DEBUG: Checking candidate {candidate_id} with {votes} votes against threshold {votes_needed_for_supermajority}")
+                if votes >= votes_needed_for_supermajority:
+                    self.winner = candidate_id
+                    winner_name = self.agents[self.winner].name if self.winner < len(self.agents) else f"Unknown Candidate ({self.winner})"
+                    logger.info(f"🎉 Winner found in Election Round {self.votingRound}! Candidate {winner_name} (Agent ID: {self.winner}) wins with {votes} votes. 🎉") # Use ER
+                    return self.winner, self.votingBuffer.copy()
+                else:
+                    logger.info(f"DEBUG: Candidate {candidate_id} ({votes} votes) does not meet supermajority threshold ({votes_needed_for_supermajority} votes)")
+
+        if self.votingRound >= self.max_election_rounds:
+            logger.info(f"Maximum number of election rounds ({self.max_election_rounds}) reached. No winner determined by supermajority.") # Use ER
+            # Determine winner by simple majority if no supermajority after max rounds
+            if self.votingBuffer:
+                # Find the candidate(s) with the most votes
+                max_votes = max(self.votingBuffer.values())
+                potential_winners = [cid for cid, votes in self.votingBuffer.items() if votes == max_votes]
+                if len(potential_winners) == 1:
+                    self.winner = potential_winners[0]
+                    winner_name = self.agents[self.winner].name
+                    logger.info(f"🏆 Candidate {winner_name} (Agent ID: {self.winner}) wins with a simple majority of {max_votes} votes after {self.votingRound} election rounds. 🏆") # Use ER
+                else:
+                    logger.info(f"Multiple candidates ({len(potential_winners)}) with max votes ({max_votes}). No clear winner.") # Use ER
             else:
-                raise ValueError(f"Unknown distance metric: {distance_metric}")
-                
-        except Exception as e:
-            logger.error(f"Failed to calculate stance distance between agents {agent1_id} and {agent2_id}: {e}")
-            return float('inf')  # Return infinite distance on error
-    
-    def get_agent_stance_distances_matrix(self, round_key: str = None, distance_metric: str = "cosine") -> np.ndarray:
-        """
-        Calculate a distance matrix between all agents' stances.
-        
-        Args:
-            round_key: Specific round to compare (e.g., "initial", "V1.D2"). If None, uses latest stance.
-            distance_metric: Type of distance ("cosine", "euclidean", "manhattan")
-            
-        Returns:
-            NxN distance matrix where N is the number of agents
-        """
-        n_agents = len(self.agents)
-        distance_matrix = np.zeros((n_agents, n_agents))
-        
-        for i in range(n_agents):
-            for j in range(i + 1, n_agents):
-                distance = self.get_agent_stance_distance(i, j, round_key, distance_metric)
-                distance_matrix[i, j] = distance
-                distance_matrix[j, i] = distance  # Symmetric matrix
-        
-        return distance_matrix
+                logger.info(f"No votes cast in the final round. No winner determined after {self.votingRound} election rounds.") # Use ER
+        else:
+            logger.info(f"No votes cast in the final round. No winner determined after {self.votingRound} election rounds.") # Use ER
 
-    def update_all_embeddings_after_simulation(self) -> None:
-        """
-        Update embeddings for all agent stances across all rounds after simulation completion.
-        This ensures the visualization has the most up-to-date embeddings.
-        """
-        logger.info("Updating embeddings for all agents across all rounds...")
-        
-        try:
-            from ..embeddings import get_default_client
-            embedding_client = get_default_client()
-            
-            updated_count = 0
-            for agent in self.agents:
-                if hasattr(agent, 'stance_history') and agent.stance_history:
-                    if not hasattr(agent, 'embedding_history'):
-                        agent.embedding_history = {}
-                    
-                    for i, stance_entry in enumerate(agent.stance_history):
-                        # Create round key
-                        if isinstance(stance_entry, dict):
-                            round_key = stance_entry.get('round', i)
-                            stance_text = stance_entry.get('stance', '')
-                        else:
-                            round_key = i
-                            stance_text = stance_entry
-                        
-                        if stance_text and round_key not in agent.embedding_history:
-                            # Generate embedding for this stance
-                            embedding = embedding_client.get_embedding(stance_text)
-                            agent.embedding_history[round_key] = embedding
-                            updated_count += 1
-                            logger.debug(f"Generated embedding for {agent.name} round {round_key}")
-            
-            logger.info(f"Updated {updated_count} embeddings across all agents and rounds")
-            
-        except Exception as e:
-            logger.error(f"Failed to update embeddings after simulation: {e}")
-    
-    def get_embedding_evolution_summary(self) -> Dict[str, Any]:
-        """
-        Get a summary of how embeddings have evolved across rounds.
-        
-        Returns:
-            Dictionary with evolution statistics
-        """
-        try:
-            from ..embeddings import get_default_client
-            embedding_client = get_default_client()
-            
-            summary = {
-                "total_agents": len(self.agents),
-                "agents_with_embeddings": 0,
-                "rounds_covered": set(),
-                "average_movements": {},
-                "max_movements": {},
-                "agent_movements": {}
-            }
-            
-            for agent in self.agents:
-                if hasattr(agent, 'embedding_history') and agent.embedding_history:
-                    summary["agents_with_embeddings"] += 1
-                    rounds = sorted(agent.embedding_history.keys())
-                    summary["rounds_covered"].update(rounds)
-                    
-                    # Calculate movement between consecutive rounds
-                    movements = []
-                    for i in range(1, len(rounds)):
-                        prev_round = rounds[i-1]
-                        curr_round = rounds[i]
-                        distance = embedding_client.euclidean_distance(
-                            agent.embedding_history[prev_round],
-                            agent.embedding_history[curr_round]
-                        )
-                        movements.append(distance)
-                    
-                    if movements:
-                        summary["agent_movements"][agent.name] = {
-                            "movements": movements,
-                            "average": np.mean(movements),
-                            "max": np.max(movements),
-                            "total": np.sum(movements)
-                        }
-            
-            # Calculate overall statistics
-            if summary["agent_movements"]:
-                all_averages = [data["average"] for data in summary["agent_movements"].values()]
-                all_maxes = [data["max"] for data in summary["agent_movements"].values()]
-                
-                summary["average_movements"] = {
-                    "mean": np.mean(all_averages),
-                    "std": np.std(all_averages)
-                }
-                summary["max_movements"] = {
-                    "mean": np.mean(all_maxes),
-                    "std": np.std(all_maxes)
-                }
-            
-            summary["rounds_covered"] = sorted(list(summary["rounds_covered"]))
-            
-            return summary
-            
-        except Exception as e:
-            logger.error(f"Failed to generate embedding evolution summary: {e}")
-            return {"error": str(e)}
+        logger.info(f"No winner yet after Election Round {self.votingRound}. Proceeding to next round or discussion.") # Use ER
+        return None, self.votingBuffer.copy()
+
+    def get_agent_by_id(self, agent_id: int) -> Optional[Agent]:
+        """Fetch an agent by its ID."""
+        if 0 <= agent_id < len(self.agents):
+            return self.agents[agent_id]
+        return None

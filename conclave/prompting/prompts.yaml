@@ -56,7 +56,7 @@ discussion_candidate: |
 
   Electors = {elector_count} · Majority = {threshold}
   Ballot tally: {compact_scoreboard}
-  **Room composition**: {room_support_counts}   # e.g. “Parolin 3 · Tagle 0 · Arinze 0 · Undecided 2”
+  **Room composition**: {room_support_counts}
 
   ── You are **Cardinal {agent_name}** (papabile) ──
   Private stance: {stance_digest}
@@ -67,12 +67,14 @@ discussion_candidate: |
   • **Open** with a clause referencing the room-composition line.  
   • State/defend your position and, if useful, make a rhetorical appeal or concession.  
   • Quote or slogan-phrase may appear **once per discussion** and must be ≤ 4 words.  
-  • Include an explicit path to the majority (e.g. “Parolin 8 + Tagle 2 = 10”), only mention cardinals in the ballot tally.  
-  • End with your vote declaration (“I cast my vote for …”).  
+  • Include an explicit arithmetic path to the majority; only mention cardinals in the ballot tally.  
+  • End with your vote declaration (“I cast my vote for …”).
 
   **Guidelines**  
   • Address others formally by name (“Your Eminence Cardinal …”)—never address yourself that way; use “I”.  
-  • No lists, bullet points or meta-commentary.  
+  • Mention *your own* vote count once at most.  
+  • If no single arithmetic path can reach {threshold}, state the impasse briefly instead of inventing numbers.  
+  • No lists, bullet points or meta-commentary.
 
 # 1.4 DISCUSSION_ELECTOR
 # Variables: {agent_name}, {discussion_round}, {elector_count}, {threshold},
@@ -92,32 +94,44 @@ discussion_elector: |
   **Mandatory content (in any order)**  
   • Begin with a clause that references the room-composition line.  
   • Offer a rhetorical appeal or concession that fits your stance.  
-  • Provide a concrete arithmetic coalition path to {threshold}, only mentioning cardinals from the tally.  
+  • Provide a concrete arithmetic coalition path to {threshold}, only naming cardinals from the tally.  
   • Finish with your vote declaration.  
   • Only one reused slogan/quotation per discussion, ≤ 4 words.
 
   **Guidelines**  
   • Address colleagues formally; never title yourself.  
+  • Turn is invalid if it contains a direct *question*; use rhetorical framing only.  
+  • If no feasible arithmetic path exists, acknowledge the dead-lock rather than fabricating sums.  
   • Keep prose concise and relevant; no bullet points or meta-commentary.
 
 # 1.5 DISCUSSION_ANALYZER
-# Variables: {round_id}, {group_transcript} -> 
-# add quotes of candidates, forming alliances (used to update stance)
+# Variables: {round_id}, {group_transcript_text}
+# Expected output format:
+# {{
+#   "key_points": ["<≤25 w>", "<≤25 w>", "<≤25 w>"],
+#   "speakers":   ["Name1", "Name2", "Name3"],
+#   "overall_tone": "harmonious" | "mixed" | "tense"
+# }}
 discussion_analyzer: |
-  SYSTEM · Group-Summary Bot  
-  Input  : transcript of round {round_id}  
-  Output : valid JSON
+  SYSTEM · Group-Summary Bot
+  Input  : transcript of round {round_id} for a specific discussion group.
 
-  {{
-    "key_points": ["<≤25 w>", "<≤25 w>", "<≤25 w>"],
-    "speakers":   ["Name1", "Name2", "Name3"],
-    "overall_tone": "harmonious" | "mixed" | "tense"
-  }}
+  **Task:**
+  Analyze the following discussion transcript and extract:
+  1. Three most salient key points or arguments made (each <= 25 words).
+  2. The names of the (up to) three primary speakers involved in these key points.
+  3. The overall tone of this specific group discussion.
 
-  Rank most recent convincing points highest.
+  Transcript:
+  {group_transcript_text}
+
+  **Output Format:**
+  You MUST return ONLY a valid JSON object structured according to the tool definition.
+  The JSON object should contain the fields: "key_points" (an array of strings), "speakers" (an array of strings), and "overall_tone" (a string: "harmonious", "mixed", or "tense").
+  Example structure: {{"key_points": ["point1", "point2", "point3"], "speakers": ["speaker1", "speaker2", "speaker3"], "overall_tone": "mixed"}}
 
 # 1.6 DISCUSSION_REFLECTION
-# Variables: {agent_name}, {persona_internal}, {group_summary}, {agent_last_utterance}, 
+# Variables: {agent_name}, {persona_internal}, {group_analysis_summary_text}, {agent_last_utterance_text}, 
 # {compact_scoreboard}, {threshold}
 discussion_reflection: |
   #### Private Reflection – {agent_name}
@@ -125,17 +139,21 @@ discussion_reflection: |
   {persona_internal}
 
   Round summary:
-  {group_summary}
+  {group_analysis_summary_text}
 
-  Your last remark:
-  {agent_last_utterance}
+  **Internal Thought Process (Do NOT output this part directly):**
+  Consider the following points for your internal understanding:
+  1. Argument(s) or observations that impressed or concerned you.
+  2. Any shift in your strategic view or assessment of candidates' momentum.
+  3. Your tentative plan or key consideration for the next discussion or ballot.
 
-  Write 3 bullets (keep crisp):
-  1. Argument(s) that impressed you.  
-  2. Shift in view given momentum tags?  
-  3. Plan for next discussion or ballot.
+  **Task:**
+  Based on your internal thought process, formulate a concise **Reflection Digest**. This digest must be a single sentence, 25 words or less, summarizing your current leaning or primary consideration for achieving the {threshold} vote target.
 
-  Finish with **Reflection Digest** – ≤25 words on current leaning (aim for {threshold} votes).
+  **Output Format:**
+  You MUST return ONLY a valid JSON object containing your reflection digest.
+  The JSON object should look EXACTLY like this, with your digest replacing the placeholder:
+  {{"reflection_digest": "<Your concise reflection digest here, <= 25 words>"}}
 
 # 1.7 STANCE
 # Variables: {agent_name}, {role_tag}, {persona_internal}, {reflection_digest}, 
@@ -154,7 +172,7 @@ stance: |
   Decide privately →
   • Primary pick? • Backup if momentum fails? • Bargaining chips?
 
-  **Stance Digest (1 sentence):**
+  **Stance Digest (one sentence, ≤ 25 words; avoid filler):**
 
 # 1.8 VOTING_CANDIDATE
 # Variables: {agent_name}, {persona_internal}, {stance_digest}, {compact_scoreboard}, 
@@ -198,68 +216,71 @@ voting_elector: |
 # TOOL DEFINITIONS FOR ROBUST_TOOLS.PY
 # ===================================================================
 tool_definitions:
-  generate_stance:
-    name: "generate_stance"
-    description: "Generates a detailed stance for a cardinal regarding their preferred candidate, church priorities, theological position, concerns, and the influence of recent discussions."
-    parameters:
-      type: "object"
-      properties:
-        stance:
-          type: "string"
-          description: "The detailed stance of the cardinal (75-125 words)."
-      required: ["stance"]
-    example_json: |
-      {"function": "generate_stance", "parameters": {"stance": "I favor Cardinal Pietro Parolin due to his diplomatic experience and moderate theological approach. The Church should prioritize evangelization while addressing contemporary social challenges like climate change and economic inequality. I hold a centrist position, balancing tradition with necessary pastoral adaptation. My main concern is candidates who might polarize the College or neglect the Global South. Recent discussions about synodality have reinforced my belief that we need a collaborative leader who can bridge theological divisions within our College."}}
-    additional_prompt_instructions: |
-      IMPORTANT FOR STANCE: Write exactly 75-125 words. Be specific about preferred candidate, Church priorities, theological position, concerns, and recent discussion influence.
-
   cast_vote:
     name: "cast_vote"
-    description: "Casts a vote for a specific cardinal candidate."
+    description: "Casts a vote for a cardinal in the papal election."
     parameters:
       type: "object"
       properties:
         vote_cardinal_id:
           type: "integer"
-          description: "The ID of the cardinal being voted for."
-        explanation:
+          description: "The Cardinal_ID of the agent being voted for."
+        reasoning: # Optional, for logging or future use
           type: "string"
-          description: "A brief explanation for the vote (optional)."
+          description: "A brief reasoning for the vote (optional)."
       required: ["vote_cardinal_id"]
-    example_json: |
-      {"function": "cast_vote", "parameters": {"vote_cardinal_id": 2, "explanation": "Cardinal Parolin's experience is vital."}}
-    additional_prompt_instructions: |
-      Ensure 'vote_cardinal_id' is an integer. Provide a concise explanation if possible.
 
   speak_message:
     name: "speak_message"
-    description: |
-      Allows a cardinal to deliver one formal utterance during the discussion.
-      The statement must read as natural prose (no bullet points) and stay within
-      a ~110-token soft cap.
-
+    description: "Delivers a message during a discussion round."
     parameters:
-      type: object
+      type: "object"
       properties:
         message:
-          type: string
-          description: |
-            The full text to be spoken. It should be a concise paragraph addressed
-            to the other cardinals.
-      required: [message]
+          type: "string"
+          description: "The content of the message to be spoken."
+      required: ["message"]
 
-    example_json: |
-      {
-        "function": "speak_message",
-        "parameters": {
-          "message": "With three voices here already favouring Cardinal Parolin, Your Eminences, I add mine gladly. Yet we still need two more to reach the ten-vote threshold. I pledge my Sant’Egidio contacts to win over Cardinal Farrell’s single supporter, and I will back Cardinal Tagle’s ‘Church of the Poor’ plank to entice one undecided African elector. Parolin 8 + Farrell 1 + undecided 1 equals the needed ten. I therefore cast my vote for Cardinal Pietro Parolin."
-        }
-      }
+  generate_stance:
+    name: "generate_stance"
+    description: "Generates an internal stance for an agent based on current context."
+    parameters:
+      type: "object"
+      properties:
+        stance:
+          type: "string"
+          description: "The generated internal stance of the agent (75-125 words)."
+      required: ["stance"]
 
-    # You already embed the speaking rules in the discussion prompt itself.
-    # If that stays, you can omit extra instructions here or leave a single reminder.
-    additional_prompt_instructions: |
-      Keep each utterance relevant, respectful, and ≤110 tokens.
+  discussion_analyzer: # New Tool
+    name: "discussion_analyzer"
+    description: "Analyzes a discussion transcript and generates a structured summary."
+    parameters:
+      type: "object"
+      properties:
+        key_points:
+          type: "array"
+          items:
+            type: "string"
+          description: "List of 3 key points from the discussion (each <= 25 words)."
+        speakers:
+          type: "array"
+          items:
+            type: "string"
+          description: "List of 3 main speakers involved in these key points."
+        overall_tone:
+          type: "string"
+          enum: ["harmonious", "mixed", "tense"]
+          description: "The overall tone of the discussion."
+      required: ["key_points", "speakers", "overall_tone"]
 
-
-          "message": "With three voices here already favouring Cardinal Parolin, Your Eminences, I add mine gladly. Yet we still need two more to reach the ten-vote threshold. I pledge my Sant’Egidio contacts to win over Cardinal Farrell’s single supporter, and I will back Cardinal Tagle’s ‘Church of the Poor’ plank to entice one undecided African elector. Parolin 8 + Farrell 1 + undecided 1 equals the needed ten. I therefore cast my vote for Cardinal Pietro Parolin."
+  discussion_reflection: # New Tool
+    name: "discussion_reflection"
+    description: "Generates a private reflection digest based on discussion summary and agent's last utterance."
+    parameters:
+      type: "object"
+      properties:
+        reflection_digest:
+          type: "string"
+          description: "A concise reflection digest (<= 25 words) on current leaning."
+      required: ["reflection_digest"]

@@ -89,33 +89,41 @@ def main():
 
             # REMOVED: env.reset_discussion_speakers_for_new_election_round()
 
-            # Run a full discussion phase (which now handles groups internally)
-            logger.info(f"\n--- Discussion Phase (Voting Round {election_round}) ---")
+            # Run a full discussion phase (which now handles groups internally,
+            # including analysis and reflection at the end of env.run_discussion_round())
+            logger.info(f"\n--- Discussion, Analysis & Reflection Phase (Voting Round {election_round}) ---")
             # print(
             #     f"Attempting to run discussion round (Election Round {election_round})"
             # )
-            env.run_discussion_round()  # No num_speakers argument needed
+            env.run_discussion_round()  # This internally calls analyze_discussion_round and agents_reflect_on_discussions
             # print(
             #     f"Discussion round completed (Election Round {election_round})"
             # )
 
-            # After all discussions, run voting
-            # print(
-            #     f"Attempting to run voting round (Election Round {election_round})"
-            # )
-            winner_found = env.run_voting_round()
-            # print(
-            #     f"Voting round completed (Election Round {election_round}). Winner found: {winner_found}"
-            # )
+            # Explicitly update stances after discussion and reflection
+            logger.info(f"\n--- Stance Update Phase (Voting Round {election_round}) ---")
+            env.update_internal_stances()
+
+            # Run a voting round
+            logger.info(f"\n--- Voting Phase (Voting Round {election_round}) ---")
+            # print(f"Attempting to run voting round (Election Round {election_round})")
+            winner_id, vote_counts = env.run_voting_round()  # FIXED: Properly unpack the tuple
+            winner_found = winner_id is not None  # FIXED: Determine winner status from winner_id
+            # print(f"Voting round completed (Election Round {election_round})")
+
             print(
                 f"\n📊 Election Round {election_round} completed. Winner found: {'Yes' if winner_found else 'No'}\n"
             )
 
         if winner_found:
             print(f"✅ CONCLAVE COMPLETE!")
-            print(
-                f"🎉 Winner: Cardinal {env.agents[env.winner].name} elected as Pope after {election_round} election rounds"
-            )
+            if env.winner is not None:  # ADDED CHECK for env.winner
+                print(
+                    f"🎉 Winner: Cardinal {env.agents[env.winner].name} elected as Pope after {election_round} election rounds"
+                )
+            else:
+                print("Error: Winner was reported, but the winner's ID was not set in the environment.")
+                logger.error("winner_found is True, but env.winner is None. This indicates an issue in run_voting_round setting self.winner.")
         else:
             print(f"❌ CONCLAVE INCOMPLETE")
             print(
@@ -144,18 +152,15 @@ def main():
 
         # Generate stance progression visualization using CardinalVisualizer
         # First ensure all embeddings are updated
-        env.update_all_embeddings_after_simulation()
+        # env.update_all_embeddings_after_simulation() # Commenting out as this method does not exist
         
         # Log embedding evolution summary
-        evolution_summary = env.get_embedding_evolution_summary()
-        logger.info(f"Embedding evolution summary: {evolution_summary.get('agents_with_embeddings', 0)}/{evolution_summary.get('total_agents', 0)} agents have embeddings")
-        if evolution_summary.get('average_movements'):
-            logger.info(f"Average stance movement: {evolution_summary['average_movements']['mean']:.4f} ± {evolution_summary['average_movements']['std']:.4f}")
+        # evolution_summary = env.get_embedding_evolution_summary() # Commenting out as this method does not exist
         
-        visualizer = CardinalVisualizer(
-            config_manager, viz_dir=str(viz_dir)
-        )  # Pass config_manager
-        visualizer.generate_stance_visualization_from_env(env)
+        #visualizer = CardinalVisualizer(
+        #    config_manager, viz_dir=str(viz_dir)
+        #)  # Pass config_manager
+        #visualizer.generate_stance_visualization_from_env(env)
 
     finally:
         # Restore the original working directory

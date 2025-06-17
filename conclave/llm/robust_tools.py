@@ -175,13 +175,22 @@ class JSONParser:
                             parameters = parsed.get('parameters', {})
                             
                             # Special handling for cast_vote function
-                            if parsed.get('function') == 'cast_vote' and 'candidate' in parameters:
-                                candidate = parameters['candidate']
+                            if parsed.get('function') == 'cast_vote' and 'vote_cardinal_id' in parameters: # MODIFIED: 'candidate' to 'vote_cardinal_id'
+                                candidate_id_val = parameters['vote_cardinal_id'] # MODIFIED: 'candidate' to 'vote_cardinal_id'
                                 # Convert string candidate IDs to integers
-                                if isinstance(candidate, str) and candidate.isdigit():
-                                    parameters['candidate'] = int(candidate)
-                                elif isinstance(candidate, str):
-                                    logger.warning(f"Invalid candidate string value: '{candidate}'")
+                                if isinstance(candidate_id_val, str) and candidate_id_val.isdigit():
+                                    parameters['vote_cardinal_id'] = int(candidate_id_val) # MODIFIED: 'candidate' to 'vote_cardinal_id'
+                                elif isinstance(candidate_id_val, (int, float)): # Allow int or float
+                                    parameters['vote_cardinal_id'] = int(candidate_id_val) # MODIFIED: 'candidate' to 'vote_cardinal_id'
+                                elif isinstance(candidate_id_val, bool): # Check for boolean
+                                    logger.warning(f"Invalid boolean candidate ID value: '{candidate_id_val}'. Setting to -1 (invalid).")
+                                    parameters['vote_cardinal_id'] = -1 # Set to an invalid ID
+                                elif isinstance(candidate_id_val, str): # Non-digit string
+                                    logger.warning(f"Invalid candidate string value: '{candidate_id_val}'. Setting to -1 (invalid).")
+                                    parameters['vote_cardinal_id'] = -1 # Set to an invalid ID
+                                else: # Other unexpected types
+                                    logger.warning(f"Unexpected type for candidate ID: {type(candidate_id_val)}, value: '{candidate_id_val}'. Setting to -1 (invalid).")
+                                    parameters['vote_cardinal_id'] = -1 # Set to an invalid ID
                             
                             return ToolCallResult(
                                 success=True,
@@ -384,6 +393,14 @@ class RobustToolCaller:
     def call_tool(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
         """Call a tool using the most appropriate strategy for the model with retry mechanism."""
         
+        # Log the initial request being sent to the LLM
+        # Ensure messages are serializable for logging if they contain complex objects (though typically they are dicts of strings)
+        try:
+            loggable_messages = json.dumps(messages)
+        except TypeError:
+            loggable_messages = str(messages) # Fallback to string representation
+        self.logger.debug(f"LLM_REQUEST (Tool: {tool_choice or 'auto'}, Model: {self.model_name}): {loggable_messages}")
+
         for attempt in range(self.max_retries + 1):
             if attempt > 0:
                 self.logger.info(f"Retry attempt {attempt}/{self.max_retries} for {self.model_name}")
@@ -629,6 +646,22 @@ class RobustToolCaller:
             result = JSONParser.parse_tool_response(response_text)
             result.strategy_used = ToolCallStrategy.PROMPT_BASED
             
+            # ADDED: Check if the called function matches the expected tool_choice
+            if result.success and tool_choice and result.function_name != tool_choice:
+                self.logger.warning(
+                    f"LLM returned a successful call for function '{result.function_name}', "
+                    f"but function '{tool_choice}' was expected. Treating as a failure for the expected tool."
+                )
+                # Override success because the wrong tool was called
+                return ToolCallResult(
+                    success=False,
+                    function_name=result.function_name, # Still report what was actually called
+                    arguments=result.arguments,
+                    raw_response=result.raw_response,
+                    error=f"LLM called '{result.function_name}' when '{tool_choice}' was expected.",
+                    strategy_used=ToolCallStrategy.PROMPT_BASED
+                )
+            
             # Log the parsed result
             self.logger.info(f"Parsed result - Success: {result.success}, Function: {result.function_name}, Args: {result.arguments}")
             
@@ -812,7 +845,7 @@ Example of a desired output format: {{"result": "some value", "status": "success
         # ... existing code ...
     
     def parse_tool_calls(self, text: str, strategy_used: ToolCallStrategy) -> List[ToolCallResult]:
-        """Parse tool calls from the model\'s response text.\"\"\"
+        """Parse tool calls from the model's response text."""
         logger.critical("CRITICAL_TEST: parse_tool_calls called AT THE VERY BEGINNING")
         print(f"ROBUST_TOOLS.PY: parse_tool_calls: CONCLAVE.LLM logger state: Handlers: {logger.handlers}, Name: {logger.name}, Effective level: {logging.getLevelName(logger.getEffectiveLevel())}, Propagate: {logger.propagate}, Disabled: {logger.disabled}")
         if not text or not text.strip():

@@ -31,3 +31,5 @@ embeddings:
   cache_dir: ~/.cache/embeddings
   similarity_threshold: 0.7
   max_search_results: 10
+
+allow_reflection_without_summary: true

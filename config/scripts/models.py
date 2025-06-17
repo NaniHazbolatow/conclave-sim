@@ -66,6 +66,7 @@ class AgentConfig(BaseModel):
     """Agent configuration (LLM + Embeddings)."""
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    allow_reflection_without_summary: bool = Field(default=True, description="Allow agents to reflect even if no group analysis summary is available") # Added field
 
 
 # ===================================================================

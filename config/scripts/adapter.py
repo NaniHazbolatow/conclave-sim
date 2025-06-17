@@ -52,22 +52,63 @@ class LLMIOFilter(logging.Filter):
 
 class ConfigAdapter:
     """Adapter to provide old ConfigManager interface with new refactored config system."""
+    _instance = None # Add singleton instance tracker
+
+    def __new__(cls, *args, **kwargs): # Implement __new__ for singleton
+        if cls._instance is None:
+            cls._instance = super(ConfigAdapter, cls).__new__(cls)
+        return cls._instance
     
-    def __init__(self, config_dir: str = None):
+    def __init__(self, config_dir: str = None, config_object: RefactoredConfig = None): # Add config_object parameter
         """Initialize the config adapter.
         
         Args:
             config_dir: Directory containing refactored config files
+            config_object: An optional pre-loaded RefactoredConfig object.
         """
-        if config_dir is None:
+        if hasattr(self, '_initialized') and self._initialized and (config_object is None): # Avoid re-init if already done and no new object
+             # If already initialized and no new config_object is given,
+             # and we are not forcing a reload from a specific config_dir,
+             # then we assume the existing self.config is the one to use.
+             # This handles the case where ConfigAdapter() is called multiple times
+             # without args after initial setup.
+            if config_dir is None or Path(config_dir) == self.config_dir:
+                return
+
+        if config_object:
+            self.config = config_object
+            # If config_object is provided, config_dir might be irrelevant or should be consistent.
+            # For simplicity, we'll assume config_dir is mainly for loading if no object is passed.
+            # We can set a default or try to infer it if needed, or require it.
+            # Let's assume if config_object is passed, self.config_dir can be set from a default
+            # or a passed config_dir if consistent.
+            if config_dir:
+                self.config_dir = Path(config_dir)
+            else:
+                # Default config_dir if not provided with a config_object
+                project_root = Path(__file__).parent.parent.parent
+                self.config_dir = project_root / "config"
+            self.config_path = self.config_dir # Directory instead of single file
+            # Loader might need to be re-evaluated if config is passed directly
+            # For now, assume loader is tied to config_dir if used for loading.
+            # If config is passed directly, direct access is prioritized.
+            self.loader = get_config_loader(str(self.config_dir))
+
+        elif config_dir is None:
             # Default to the parent directory (config/) where YAML files are located
             project_root = Path(__file__).parent.parent.parent
             config_dir = project_root / "config"
+            self.config_dir = Path(config_dir)
+            self.config: RefactoredConfig = load_config(str(self.config_dir))
+            self.config_path = self.config_dir
+            self.loader = get_config_loader(str(self.config_dir))
+        else:
+            self.config_dir = Path(config_dir)
+            self.config: RefactoredConfig = load_config(str(self.config_dir))
+            self.config_path = self.config_dir
+            self.loader = get_config_loader(str(self.config_dir))
         
-        self.config_dir = Path(config_dir)
-        self.config: RefactoredConfig = load_config(str(config_dir))
-        self.config_path = self.config_dir  # Directory instead of single file
-        self.loader = get_config_loader(str(config_dir)) # Ensure loader is initialized
+        self._initialized = True # Mark as initialized
     
     def initialize_logging(self, dynamic_logs_dir: str): # Made dynamic_logs_dir mandatory
         """Initialize logging configuration for console and file output."""

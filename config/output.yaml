@@ -1,6 +1,6 @@
 output:
   logging:
-    log_level: DEBUG
+    log_level: ERROR
     performance_logging: true
   results:
     save_individual_votes: true

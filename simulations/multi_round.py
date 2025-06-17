@@ -59,7 +59,8 @@ def main():
         
         # Run voting round
         logger.info("--- Running Voting Round ---")
-        winner_found = env.run_voting_round()
+        winner_id, vote_counts = env.run_voting_round()  # FIXED: Properly unpack the tuple
+        winner_found = winner_id is not None  # FIXED: Determine winner status from winner_id
         
         if winner_found:
             logger.info(f"Winner found in round {current_round + 1}: Cardinal {env.winner} - {env.agents[env.winner].name}")

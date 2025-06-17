@@ -49,7 +49,8 @@ def main():
     # Generate initial internal stances for all agents before starting
     env.generate_initial_stances()
     
-    winner_found = env.run_voting_round() # Store winner_found
+    winner_id, vote_counts = env.run_voting_round()  # FIXED: Properly unpack the tuple
+    winner_found = winner_id is not None  # FIXED: Determine winner status from winner_id
     
     # Save results
     results_data = {

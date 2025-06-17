@@ -1,6 +1,6 @@
 testing_groups:
   enabled: true
-  active_group: small
+  active_group: large
   small:
     total_cardinals: 5
     cardinal_ids:
@@ -15,8 +15,8 @@ testing_groups:
     description: Small testing group focusing on ideological diversity
     override_settings:
       num_cardinals: 5
-      discussion_group_size: 3
-      max_election_rounds: 8
+      discussion_group_size: 5
+      max_election_rounds: 1
       supermajority_threshold: 0.667
   medium:
     total_cardinals: 15

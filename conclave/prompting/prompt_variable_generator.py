@@ -298,24 +298,39 @@ class PromptVariableGenerator:
 
     def generate_agent_last_utterance(self, agent_id: int) -> str:
         """Generate agent_last_utterance variable as defined in glossary."""
-        for round_comments in reversed(self.env.discussionHistory):
-            for comment in round_comments:
-                if comment['agent_id'] == agent_id:
-                    return comment['message']
-        return "No previous utterance"
+        # Find the last message by this agent in the most recent discussion round
+        # This requires access to self.env.discussionHistory and self.env.discussionRound
+        current_discussion_round_index = self.env.discussionRound - 1
+        if 0 <= current_discussion_round_index < len(self.env.discussionHistory):
+            current_round_comments = self.env.discussionHistory[current_discussion_round_index]
+            for comment in reversed(current_round_comments): # Search backwards for the last one
+                if comment.get('agent_id') == agent_id:
+                    return comment.get('message', "No utterance found.")
+        return "No utterance found in the current discussion round."
+
+    def generate_prompt_variables_for_group_analysis(self, group_id: int, group_agent_ids: List[int], discussion_transcript: str) -> Dict[str, Any]:
+        """
+        Generates variables specifically for the discussion_analyzer prompt.
+        """
+        group_member_names = [self.env.agents[aid].name for aid in group_agent_ids if aid < len(self.env.agents)]
+        
+        return {
+            "group_id": group_id,
+            "group_participants_count": len(group_agent_ids),
+            "group_participants_ids": ", ".join(map(str, group_agent_ids)),
+            "group_participants_names": ", ".join(group_member_names),
+            "group_transcript_text": discussion_transcript, # Changed from discussion_transcript
+            # Add any other variables specifically needed by the 'discussion_analyzer' prompt template
+            # For example, if it needs the current round:
+            "current_round": self.env.votingRound, 
+            "discussion_round_num": self.env.discussionRound,
+            "round_id": self.env.discussionRound # Added round_id for discussion_analyzer prompt
+        }
 
     def generate_reflection_digest(self, agent_id: int) -> str:
-        """Generate reflection_digest variable as defined in glossary."""
+        """Generate reflection_digest variable. Retrieves it from the agent object."""
         agent = self.env.agents[agent_id]
-        if self.env.discussionRound == 0: # Changed from self.env.votingRound == 0
-            # return "" # Return a more informative default for initial stance
-            return "Initial assessment of the conclave situation and potential candidates."
-        stance = getattr(agent, 'internal_stance', None)
-        if not stance:
-            return "Analyzing current situation and candidate options."
-        words = stance.split()
-        reflection = " ".join(words[:25]) if len(words) > 25 else stance
-        return reflection.replace('\n', ' ').replace('"', '').replace("'", '').strip()
+        return getattr(agent, 'current_reflection_digest', "Reflection not yet generated.")
 
     def generate_visible_candidate_ids(self) -> str:
         """Generate list of Cardinal IDs for voting (JSON format)."""
@@ -375,7 +390,7 @@ class PromptVariableGenerator:
             
             lines.append(f"Cardinal {cardinal_id} - {name}")
             
-        return "\\n".join(lines)
+        return "\n".join(lines) # Changed from \\\\n
 
     def generate_viable_papabili(self, include_cardinal_id: bool) -> str:
         """
