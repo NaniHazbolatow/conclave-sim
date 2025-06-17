@@ -7,6 +7,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional
+from dotenv import load_dotenv
 from .models import RefactoredConfig, TestingGroupsConfig
 
 
@@ -20,10 +21,15 @@ class RefactoredConfigLoader:
             config_dir: Directory containing configuration files. 
                        Defaults to the 'refactored' directory next to this file.
         """
+        # Load environment variables from .env file
+        # Look for .env file in the project root (parent of config directory)
         if config_dir is None:
             # Default to the parent directory (config/) where YAML files are located
             config_dir = Path(__file__).parent.parent  
         self.config_dir = Path(config_dir)
+        
+        # Load .env file from project root (parent of config directory)
+        env_file = self.config_dir.parent / ".env"
         
         # Define the component configuration files
         self.config_files = {

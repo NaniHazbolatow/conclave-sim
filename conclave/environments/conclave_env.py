@@ -11,9 +11,10 @@ import numpy as np # Add numpy import
 
 from conclave.agents.base import Agent # For type hinting, removed AgentSettings, LLMSettings, EmbeddingSettings
 from conclave.prompting.prompt_loader import PromptLoader # Corrected import to use prompting
-from conclave.prompting.prompt_variable_generator import PromptVariableGenerator
-from config.scripts.models import RefactoredConfig 
-from config.scripts.adapter import ConfigAdapter
+from conclave.prompting.unified_generator import UnifiedPromptVariableGenerator
+from conclave.config import get_config_manager # Use centralized config management
+from conclave.llm import get_llm_client, SimplifiedToolCaller # Use new simplified tool calling
+from config.scripts.models import RefactoredConfig
 
 if TYPE_CHECKING:
     from ..agents.base import Agent # For type hinting
@@ -44,11 +45,11 @@ class ConclaveEnv:
         self.discussionRound = 0
         self.agent_discussion_participation: Dict[int, List[int]] = {} # agent_id -> list of discussion_round_numbers
 
-        # Initialize config adapter and load configuration
-        # print("ConclaveEnv.__init__: Initializing ConfigAdapter...") # DEBUG PRINT
-        self.config_adapter = ConfigAdapter()
-        self.app_config: RefactoredConfig = self.config_adapter.config # Access config directly
-        # print("ConclaveEnv.__init__: ConfigAdapter initialized.") # DEBUG PRINT
+        # Initialize config manager and load configuration
+        # print("ConclaveEnv.__init__: Initializing ConfigManager...") # DEBUG PRINT
+        self.config_manager = get_config_manager()
+        self.app_config: RefactoredConfig = self.config_manager.config # Access config directly
+        # print("ConclaveEnv.__init__: ConfigManager initialized.") # DEBUG PRINT
 
         # Load prompts and tools
         # self.prompt_loader = PromptLoader(self.app_config) # Old incorrect line
@@ -59,21 +60,18 @@ class ConclaveEnv:
         self.prompt_loader = PromptLoader(str(prompts_file_path.resolve())) # Pass the correct path string
         # print("ConclaveEnv.__init__: PromptLoader initialized.") # DEBUG PRINT
         
-        # print("ConclaveEnv.__init__: Initializing PromptVariableGenerator...") # DEBUG PRINT
-        self.prompt_variable_generator = PromptVariableGenerator(self, self.prompt_loader) # Pass self (env) and prompt_loader
-        # print("ConclaveEnv.__init__: PromptVariableGenerator initialized.") # DEBUG PRINT
+        # print("ConclaveEnv.__init__: Initializing UnifiedPromptVariableGenerator...") # DEBUG PRINT
+        self.prompt_variable_generator = UnifiedPromptVariableGenerator(self, self.prompt_loader) # Pass self (env) and prompt_loader
+        # print("ConclaveEnv.__init__: UnifiedPromptVariableGenerator initialized.") # DEBUG PRINT
 
         # LLM Client for Environment-level tool calls (e.g., discussion analyzer)
         # This uses the same shared manager as agents but gets its own client instance if needed.
         # Typically, environment tasks might use a specific configuration or even a different model.
         # For now, we assume it can use a similar setup. Consider a separate config if distinct behavior is needed.
         try:
-            # Pass the ConfigAdapter instance to the shared manager
-            # This client is for the environment itself, if it needs to call LLMs (e.g. for discussion_analyzer)
-            from conclave.agents.base import _shared_llm_manager # Access shared manager
-            self.env_llm_client = _shared_llm_manager.get_client(self.config_adapter)
-            from conclave.llm.robust_tools import RobustToolCaller
-            self.env_tool_caller = RobustToolCaller(self.env_llm_client, logger) # Use environment's logger
+            # Use centralized LLM client management for environment tasks
+            self.env_llm_client = get_llm_client("environment")
+            self.env_tool_caller = SimplifiedToolCaller(self.env_llm_client, logger) # Use environment's logger
             logger.info(f"ConclaveEnv initialized its own LLM client: {self.env_llm_client.model_name} for environment tasks.")
         except Exception as e:
             logger.error(f"Failed to initialize LLM client for ConclaveEnv: {e}")
@@ -581,16 +579,16 @@ class ConclaveEnv:
             group_id=group_idx,
             group_agent_ids=group_agent_ids,
             discussion_transcript=full_transcript_str,
-            # current_round=self.votingRound # Or self.discussionRound, ensure consistency
+            current_round=self.discussionRound  # Use discussionRound for consistency
         )
         # Ensure round_id is available if the template specifically uses it.
         # It seems discussion_round_num is the intended variable from the generator.
         # If 'round_id' is strictly required by the template, alias it:
-        # if 'round_id' not in prompt_vars:
-        #     prompt_vars['round_id'] = prompt_vars.get('discussion_round_num', self.discussionRound) 
+        if 'round_id' not in prompt_vars:
+            prompt_vars['round_id'] = prompt_vars.get('discussion_round_num', self.discussionRound) 
 
         # The variable 'group_transcript_text' is expected by the prompt template.
-        # The PromptVariableGenerator now generates 'group_transcript_text' directly.
+        # The UnifiedPromptVariableGenerator now generates 'group_transcript_text' directly.
         # Ensure it's correctly passed or aliased if the generator uses a different key.
         if 'group_transcript_text' not in prompt_vars and 'discussion_transcript' in prompt_vars:
             prompt_vars['group_transcript_text'] = prompt_vars['discussion_transcript']

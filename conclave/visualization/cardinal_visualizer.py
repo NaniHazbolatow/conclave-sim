@@ -17,7 +17,7 @@ import os
 import json
 import pandas as pd
 from pathlib import Path
-from config.scripts.adapter import ConfigAdapter
+from conclave.config import get_config_manager
 
 logger = logging.getLogger("conclave.visualization")
 
@@ -26,16 +26,15 @@ class CardinalVisualizer:
     Visualizes cardinal positions and ideological clusters in 2D space.
     """
     
-    def __init__(self, config_manager: ConfigAdapter, viz_dir: str):
+    def __init__(self, viz_dir: str):
         """
         Initialize the visualizer with configuration settings.
         
         Args:
-            config_manager: ConfigLoader instance managing configuration
             viz_dir: Directory to save visualizations
         """
-        self.config_manager = config_manager
-        self.viz_config = config_manager.config.output.visualization # Changed from visualization_settings
+        self.config_manager = get_config_manager()
+        self.viz_config = self.config_manager.config.output.visualization # Changed from visualization_settings
         self.viz_dir = Path(viz_dir)
         self.viz_dir.mkdir(parents=True, exist_ok=True)
         

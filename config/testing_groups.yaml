@@ -1,6 +1,6 @@
 testing_groups:
   enabled: true
-  active_group: large
+  active_group: medium
   small:
     total_cardinals: 5
     cardinal_ids:

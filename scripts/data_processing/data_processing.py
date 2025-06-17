@@ -40,7 +40,7 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from conclave.llm.client import RemoteLLMClient
+from conclave.llm import get_llm_client
 
 # --- Configuration ---
 DEFAULT_INPUT_FILE = project_root / "data" / "cardinal_electors_2025.csv"
@@ -344,7 +344,7 @@ def main():
         print(f"*** TEST MODE: Processing up to {TEST_MODE_LIMIT} records ***")
 
     prompts = load_prompts()
-    llm_client = RemoteLLMClient(model_name=LLM_MODEL)
+    llm_client = get_llm_client("agent")  # Use the new LLM manager
     if not llm_client.is_available():
         print(f"Error: LLM client for model {LLM_MODEL} not available. Check API key and model name.")
         sys.exit(1)

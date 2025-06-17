@@ -10,7 +10,6 @@ import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from pydantic import ValidationError # Added import for ValidationError
-from .prompt_variable_generator import PromptVariableGenerator
 
 from .prompt_models import PromptsConfig, ToolDefinition # Changed from .config_models
 
@@ -98,10 +97,10 @@ class PromptLoader: # Renamed from PromptManager
         Returns:
             The prompt template string, or None if not found.
         """
-        if hasattr(self.prompts_config, prompt_name):
-            return getattr(self.prompts_config, prompt_name)
-        logger.warning(f"Prompt '{prompt_name}' not found in configuration.")
-        return None
+        prompt_template = getattr(self.prompts_config, prompt_name, None)
+        if prompt_template is None:
+            logger.warning(f"Prompt '{prompt_name}' not found in configuration.")
+        return prompt_template
 
     def get_prompt_template(self, prompt_name: str) -> Optional[str]:
         """
@@ -174,13 +173,8 @@ class PromptLoader: # Renamed from PromptManager
         """
         return [name for name in self.prompts_config.dict().keys()]
 
-    def get_all_prompts(self) -> PromptsConfig:
-        """
-        Get the entire Pydantic model containing all prompts.
-
-        Returns:
-            The PromptsConfig object.
-        """
+    def get_all_prompts(self) -> Dict[str, Any]:
+        """Returns all loaded prompts as a dictionary."""
         return self.prompts_config
 
     def get_all_tool_definitions(self) -> Dict[str, ToolDefinition]:

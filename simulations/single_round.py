@@ -43,8 +43,8 @@ def main():
     # Create the environment
     env = ConclaveEnv(viz_dir=str(viz_dir)) # Pass viz_dir
 
-    # Load agents based on testing groups configuration
-    env.load_agents_from_config()
+    # Agents are automatically loaded during environment initialization
+    logger.info(f"Environment created with {len(env.agents)} agents")
     
     # Generate initial internal stances for all agents before starting
     env.generate_initial_stances()

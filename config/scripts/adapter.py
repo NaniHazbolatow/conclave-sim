@@ -256,7 +256,19 @@ class ConfigAdapter:
             return llm_config.local.model_dump() if llm_config.local else {}
         else:
             # Return as dict as RemoteLLMClient likely expects kwargs dict
-            return llm_config.remote.model_dump() if llm_config.remote else {}
+            kwargs = llm_config.remote.model_dump() if llm_config.remote else {}
+            
+            # Resolve API key from environment variable
+            if 'api_key_env' in kwargs:
+                api_key_env_name = kwargs.pop('api_key_env')  # Remove api_key_env from kwargs
+                api_key = os.getenv(api_key_env_name)
+                if api_key:
+                    kwargs['api_key'] = api_key
+                    logging.info(f"Loaded API key from environment variable: {api_key_env_name}")
+                else:
+                    logging.warning(f"API key environment variable '{api_key_env_name}' not found or empty")
+            
+            return kwargs
 
     def get_backend_type(self) -> str:
         """Get the LLM backend type (local or remote)."""

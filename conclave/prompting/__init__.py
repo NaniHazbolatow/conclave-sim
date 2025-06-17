@@ -23,8 +23,8 @@ Usage:
     prompts = get_prompt_loader()
 """
 
-# Still export prompt-related tools from here
+# Export prompt-related tools
 from .prompt_loader import PromptLoader, get_prompt_loader
-from .prompt_variable_generator import PromptVariableGenerator
+from .unified_generator import UnifiedPromptVariableGenerator
 
-__all__ = ["PromptLoader", "get_prompt_loader", "PromptVariableGenerator"]
+__all__ = ["PromptLoader", "get_prompt_loader", "UnifiedPromptVariableGenerator"]

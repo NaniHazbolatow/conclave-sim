@@ -66,7 +66,6 @@ discussion_candidate: |
   **Mandatory content (in any order)**  
   • **Open** with a clause referencing the room-composition line.  
   • State/defend your position and, if useful, make a rhetorical appeal or concession.  
-  • Quote or slogan-phrase may appear **once per discussion** and must be ≤ 4 words.  
   • Include an explicit arithmetic path to the majority; only mention cardinals in the ballot tally.  
   • End with your vote declaration (“I cast my vote for …”).
 
@@ -96,7 +95,6 @@ discussion_elector: |
   • Offer a rhetorical appeal or concession that fits your stance.  
   • Provide a concrete arithmetic coalition path to {threshold}, only naming cardinals from the tally.  
   • Finish with your vote declaration.  
-  • Only one reused slogan/quotation per discussion, ≤ 4 words.
 
   **Guidelines**  
   • Address colleagues formally; never title yourself.  
