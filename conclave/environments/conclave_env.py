@@ -7,6 +7,7 @@ from pathlib import Path # Add Path import
 from concurrent.futures import ThreadPoolExecutor # Add ThreadPoolExecutor import
 from tqdm import tqdm # Add tqdm import
 import pandas as pd # Add pandas import
+import numpy as np # Add numpy import
 
 from conclave.agents.base import Agent # For type hinting, removed AgentSettings, LLMSettings, EmbeddingSettings
 from conclave.prompting.prompt_loader import PromptLoader # Corrected import to use prompting
@@ -29,6 +30,10 @@ class ConclaveEnv:
         self.votingRound = 0
         self.votingHistory = []
         self.votingBuffer = {}
+        # Track individual votes: {voter_agent_id: candidate_id} for current round
+        self.individual_votes_buffer = {}
+        # Track individual votes history: List of {voter_agent_id: candidate_id} for each round
+        self.individual_votes_history = []
         # Track which agents participated in which discussion rounds
         self.agent_discussion_participation = {}
         # Track which agents voted in each round
@@ -273,6 +278,15 @@ class ConclaveEnv:
         updated_count = sum(1 for agent in agents_to_update if agent.internal_stance) # Make sure agent.internal_stance is the correct attribute
         logger.info(f"Internal stance update completed: {updated_count}/{len(agents_to_update)} agents updated")
         
+        # Update embeddings for the new stances
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            current_round = f"V{self.votingRound}.D{self.discussionRound}"
+            embedding_client.update_agent_embeddings_in_history(agents_to_update, current_round)
+        except Exception as e:
+            logger.warning(f"Failed to update embeddings after stance generation: {e}")
+        
         # Log stance summary for this round
         logger.info(f"=== STANCE UPDATE SUMMARY (V{self.votingRound}.D{self.discussionRound}) ===")
         for agent in agents_to_update:
@@ -301,6 +315,14 @@ class ConclaveEnv:
         
         logger.info("Initial internal stances generated for all agents")
         
+        # Update embeddings for initial stances
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            embedding_client.update_agent_embeddings_in_history(self.agents, "initial")
+        except Exception as e:
+            logger.warning(f"Failed to update embeddings for initial stances: {e}")
+        
         # Log initial stance summary
         # stances = self.get_all_stances() # get_all_stances method needs to be added
         # logger.info(f"=== INITIAL STANCES SUMMARY ({len(stances)} agents) ===")
@@ -317,8 +339,8 @@ class ConclaveEnv:
         Ensures groups have at least 2 agents if possible, by adjusting the last two groups
         if the last group would have only 1 agent.
         """
-        # Use discussion_group_size from the new config
-        discussion_group_size = self.simulation_config.discussion_group_size
+        # Use discussion_group_size from instance variable (includes testing group overrides)
+        discussion_group_size = self.discussion_group_size
         
         if discussion_group_size < 2:
             logger.warning(
@@ -389,7 +411,15 @@ class ConclaveEnv:
                 else:
                     agent_name = f"Agent (Internal ID: {internal_agent_id if internal_agent_id is not None else 'N/A'})"
                 
-                messages_str_parts.append(f"  {agent_name} (Cardinal ID: {csv_cardinal_id}): {comment.get('message', '[No message]')}")
+                # Format with nice indicators and spacing
+                message_content = comment.get('message', '[No message]')
+                messages_str_parts.append(f"  🗣️ {agent_name} (Cardinal ID: {csv_cardinal_id}):")
+                messages_str_parts.append(f"     {message_content}")
+                messages_str_parts.append("")  # Add blank line between speeches
+            
+            # Remove the last empty line if it exists
+            if messages_str_parts and messages_str_parts[-1] == "":
+                messages_str_parts.pop()
             
             consolidated_message = "\n".join(messages_str_parts)
             discussion_logger.info(consolidated_message)
@@ -446,6 +476,7 @@ class ConclaveEnv:
         Returns True if a winner is found, False otherwise.
         """
         self.votingBuffer.clear()  # Clear buffer for the new round
+        self.individual_votes_buffer.clear()  # Clear individual votes buffer
         logger.info(f"\\n--- Voting Phase (Round {self.votingRound}) ---")
 
         # Use ThreadPoolExecutor to parallelize vote casting
@@ -473,6 +504,7 @@ class ConclaveEnv:
             logger.info(f"Vote collection summary for Round {self.votingRound}: {successful_votes} successful, {failed_votes} failed attempts.")
 
         self.votingHistory.append(self.votingBuffer.copy())
+        self.individual_votes_history.append(self.individual_votes_buffer.copy())
         
         # SANITY CHECK: Ensure vote count matches agent count if all agents succeeded
         # Note: votingBuffer is populated by agent.cast_vote -> self.env.cast_vote
@@ -574,4 +606,190 @@ class ConclaveEnv:
         # Record the vote in the buffer for the current round
         # self.votingBuffer stores: {candidate_agent_id: number_of_votes}
         self.votingBuffer[candidate_id] = self.votingBuffer.get(candidate_id, 0) + 1
+        # Track individual vote: {voter_agent_id: candidate_id}
+        self.individual_votes_buffer[voter_agent_id] = candidate_id
         logger.debug(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) cast vote for {self.agents[candidate_id].name} (ID: {candidate_id}). Current buffer: {self.votingBuffer}")
+
+    def get_agent_stance_distance(self, agent1_id: int, agent2_id: int, round_key: str = None, distance_metric: str = "cosine") -> float:
+        """
+        Calculate the distance between two agents' stances.
+        
+        Args:
+            agent1_id: ID of the first agent
+            agent2_id: ID of the second agent
+            round_key: Specific round to compare (e.g., "initial", "V1.D2"). If None, uses latest stance.
+            distance_metric: Type of distance ("cosine", "euclidean", "manhattan")
+            
+        Returns:
+            Distance between the two agents' stances
+        """
+        if agent1_id >= len(self.agents) or agent2_id >= len(self.agents):
+            raise ValueError("Invalid agent ID")
+        
+        agent1 = self.agents[agent1_id]
+        agent2 = self.agents[agent2_id]
+        
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            
+            # Get embeddings for both agents
+            embedding1 = None
+            embedding2 = None
+            
+            if round_key:
+                # Use specific round if available
+                if hasattr(agent1, 'embedding_history') and round_key in agent1.embedding_history:
+                    embedding1 = agent1.embedding_history[round_key]
+                if hasattr(agent2, 'embedding_history') and round_key in agent2.embedding_history:
+                    embedding2 = agent2.embedding_history[round_key]
+            
+            # Fallback to current stance if no embedding history
+            if embedding1 is None and hasattr(agent1, 'internal_stance') and agent1.internal_stance:
+                embedding1 = embedding_client.get_embedding(agent1.internal_stance)
+            if embedding2 is None and hasattr(agent2, 'internal_stance') and agent2.internal_stance:
+                embedding2 = embedding_client.get_embedding(agent2.internal_stance)
+            
+            if embedding1 is None or embedding2 is None:
+                raise ValueError("Could not get stance embeddings for both agents")
+            
+            # Calculate distance based on metric
+            if distance_metric == "cosine":
+                return embedding_client.cosine_distance(embedding1, embedding2)
+            elif distance_metric == "euclidean":
+                return embedding_client.euclidean_distance(embedding1, embedding2)
+            elif distance_metric == "manhattan":
+                return embedding_client.manhattan_distance(embedding1, embedding2)
+            else:
+                raise ValueError(f"Unknown distance metric: {distance_metric}")
+                
+        except Exception as e:
+            logger.error(f"Failed to calculate stance distance between agents {agent1_id} and {agent2_id}: {e}")
+            return float('inf')  # Return infinite distance on error
+    
+    def get_agent_stance_distances_matrix(self, round_key: str = None, distance_metric: str = "cosine") -> np.ndarray:
+        """
+        Calculate a distance matrix between all agents' stances.
+        
+        Args:
+            round_key: Specific round to compare (e.g., "initial", "V1.D2"). If None, uses latest stance.
+            distance_metric: Type of distance ("cosine", "euclidean", "manhattan")
+            
+        Returns:
+            NxN distance matrix where N is the number of agents
+        """
+        n_agents = len(self.agents)
+        distance_matrix = np.zeros((n_agents, n_agents))
+        
+        for i in range(n_agents):
+            for j in range(i + 1, n_agents):
+                distance = self.get_agent_stance_distance(i, j, round_key, distance_metric)
+                distance_matrix[i, j] = distance
+                distance_matrix[j, i] = distance  # Symmetric matrix
+        
+        return distance_matrix
+
+    def update_all_embeddings_after_simulation(self) -> None:
+        """
+        Update embeddings for all agent stances across all rounds after simulation completion.
+        This ensures the visualization has the most up-to-date embeddings.
+        """
+        logger.info("Updating embeddings for all agents across all rounds...")
+        
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            
+            updated_count = 0
+            for agent in self.agents:
+                if hasattr(agent, 'stance_history') and agent.stance_history:
+                    if not hasattr(agent, 'embedding_history'):
+                        agent.embedding_history = {}
+                    
+                    for i, stance_entry in enumerate(agent.stance_history):
+                        # Create round key
+                        if isinstance(stance_entry, dict):
+                            round_key = stance_entry.get('round', i)
+                            stance_text = stance_entry.get('stance', '')
+                        else:
+                            round_key = i
+                            stance_text = stance_entry
+                        
+                        if stance_text and round_key not in agent.embedding_history:
+                            # Generate embedding for this stance
+                            embedding = embedding_client.get_embedding(stance_text)
+                            agent.embedding_history[round_key] = embedding
+                            updated_count += 1
+                            logger.debug(f"Generated embedding for {agent.name} round {round_key}")
+            
+            logger.info(f"Updated {updated_count} embeddings across all agents and rounds")
+            
+        except Exception as e:
+            logger.error(f"Failed to update embeddings after simulation: {e}")
+    
+    def get_embedding_evolution_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of how embeddings have evolved across rounds.
+        
+        Returns:
+            Dictionary with evolution statistics
+        """
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            
+            summary = {
+                "total_agents": len(self.agents),
+                "agents_with_embeddings": 0,
+                "rounds_covered": set(),
+                "average_movements": {},
+                "max_movements": {},
+                "agent_movements": {}
+            }
+            
+            for agent in self.agents:
+                if hasattr(agent, 'embedding_history') and agent.embedding_history:
+                    summary["agents_with_embeddings"] += 1
+                    rounds = sorted(agent.embedding_history.keys())
+                    summary["rounds_covered"].update(rounds)
+                    
+                    # Calculate movement between consecutive rounds
+                    movements = []
+                    for i in range(1, len(rounds)):
+                        prev_round = rounds[i-1]
+                        curr_round = rounds[i]
+                        distance = embedding_client.euclidean_distance(
+                            agent.embedding_history[prev_round],
+                            agent.embedding_history[curr_round]
+                        )
+                        movements.append(distance)
+                    
+                    if movements:
+                        summary["agent_movements"][agent.name] = {
+                            "movements": movements,
+                            "average": np.mean(movements),
+                            "max": np.max(movements),
+                            "total": np.sum(movements)
+                        }
+            
+            # Calculate overall statistics
+            if summary["agent_movements"]:
+                all_averages = [data["average"] for data in summary["agent_movements"].values()]
+                all_maxes = [data["max"] for data in summary["agent_movements"].values()]
+                
+                summary["average_movements"] = {
+                    "mean": np.mean(all_averages),
+                    "std": np.std(all_averages)
+                }
+                summary["max_movements"] = {
+                    "mean": np.mean(all_maxes),
+                    "std": np.std(all_maxes)
+                }
+            
+            summary["rounds_covered"] = sorted(list(summary["rounds_covered"]))
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Failed to generate embedding evolution summary: {e}")
+            return {"error": str(e)}

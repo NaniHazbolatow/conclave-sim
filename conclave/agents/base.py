@@ -234,10 +234,23 @@ class Agent:
 
         try:
             messages = [{"role": "user", "content": prompt}]
+            self.logger.info(f"DISCUSSION TOOL CALL INITIATED for {self.name} (ID: {self.agent_id})")
             result = self.tool_caller.call_tool(messages, tools, tool_choice="speak_message")
+            self.logger.info(f"DISCUSSION TOOL CALL COMPLETED for {self.name} - Success: {result.success}, Strategy: {result.strategy_used}")
             
             if result.success and result.arguments:
-                message = result.arguments.get("message", "")
+                # Debug logging to understand what we're getting
+                self.logger.info(f"DEBUG: result.arguments type: {type(result.arguments)}, value: {result.arguments}")
+                
+                if isinstance(result.arguments, dict):
+                    message = result.arguments.get("message", "")
+                elif isinstance(result.arguments, str):
+                    # Handle case where arguments is a string (fallback parsing)
+                    message = result.arguments
+                else:
+                    self.logger.warning(f"Unexpected arguments type: {type(result.arguments)}")
+                    message = str(result.arguments)
+                
                 if not message.strip():
                     self.logger.warning(f"{self.name} ({self.agent_id}) provided an empty message.")
                     message = "(Agent provided no message)"

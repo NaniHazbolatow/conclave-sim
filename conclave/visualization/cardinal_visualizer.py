@@ -126,30 +126,59 @@ class CardinalVisualizer:
             cardinal_names = list(stance_evolution.keys())
             round_embeddings = {}
             
-            # Determine which rounds we have data for
-            rounds = set()
-            for cardinal_data in stance_evolution.values():
-                for entry in cardinal_data:
-                    rounds.add(entry["round"])
+            # Check if agents already have embedding history stored
+            agents_with_embeddings = [agent for agent in env.agents if hasattr(agent, 'embedding_history') and agent.embedding_history]
             
-            rounds = sorted(rounds)
-            logger.info(f"Found stance data for rounds: {rounds}")
-            
-            # Generate embeddings for each round
-            for round_num in rounds:
-                stance_texts = []
+            if agents_with_embeddings:
+                logger.info("Using pre-computed embeddings from agent embedding history")
                 
-                for cardinal_name in cardinal_names:
-                    # Find stance for this round
-                    for entry in stance_evolution[cardinal_name]:
-                        if entry["round"] == round_num:
-                            stance_texts.append(entry["stance"])
-                            break
+                # Use stored embeddings if available
+                all_rounds = set()
+                for agent in agents_with_embeddings:
+                    all_rounds.update(agent.embedding_history.keys())
                 
-                if stance_texts:
-                    embeddings = embedding_client.get_embeddings(stance_texts)
-                    round_embeddings[round_num] = embeddings
-                    logger.info(f"Round {round_num}: Generated embeddings for {len(stance_texts)} stances")
+                for round_key in sorted(all_rounds):
+                    embeddings_for_round = []
+                    names_for_round = []
+                    
+                    for agent in env.agents:
+                        if hasattr(agent, 'embedding_history') and round_key in agent.embedding_history:
+                            embeddings_for_round.append(agent.embedding_history[round_key])
+                            names_for_round.append(agent.name)
+                    
+                    if embeddings_for_round:
+                        round_embeddings[round_key] = np.array(embeddings_for_round)
+                        if cardinal_names != names_for_round:
+                            cardinal_names = names_for_round  # Update to match available agents
+                
+            else:
+                logger.info("No pre-computed embeddings found, generating new ones")
+                
+                # Fallback to generating embeddings from stance text
+                # Determine which rounds we have data for
+                rounds = set()
+                for cardinal_data in stance_evolution.values():
+                    for entry in cardinal_data:
+                        rounds.add(entry["round"])
+                
+                rounds = sorted(rounds)
+                logger.info(f"Found stance data for rounds: {rounds}")
+                
+                # Generate embeddings for each round
+                for round_num in rounds:
+                    stance_texts = []
+                    
+                    for cardinal_name in cardinal_names:
+                        # Find stance for this round
+                        for entry in stance_evolution[cardinal_name]:
+                            if entry["round"] == round_num:
+                                stance_texts.append(entry["stance"])
+                                break
+                    
+                    if stance_texts:
+                        embeddings = embedding_client.get_embeddings(stance_texts)
+                        round_embeddings[round_num] = embeddings
+                        logger.info(f"Round {round_num}: Generated embeddings for {len(stance_texts)} stances")
             
             if not round_embeddings:
                 logger.warning("No embeddings generated. Skipping visualization.")

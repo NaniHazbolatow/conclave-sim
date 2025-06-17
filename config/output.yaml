@@ -1,6 +1,6 @@
 output:
   logging:
-    log_level: INFO
+    log_level: DEBUG
     performance_logging: true
   results:
     save_individual_votes: true

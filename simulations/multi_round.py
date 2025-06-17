@@ -100,6 +100,27 @@ def main():
         logger.info(f"Simulation summary saved to {results_file_path}")
     except Exception as e:
         logger.error(f"Error saving simulation summary: {e}")
+    
+    # Generate stance progression visualization
+    try:
+        from conclave.visualization.cardinal_visualizer import CardinalVisualizer
+        
+        # Ensure all embeddings are updated
+        env.update_all_embeddings_after_simulation()
+        
+        # Log embedding evolution summary
+        evolution_summary = env.get_embedding_evolution_summary()
+        logger.info(f"Embedding evolution summary: {evolution_summary.get('agents_with_embeddings', 0)}/{evolution_summary.get('total_agents', 0)} agents have embeddings")
+        if evolution_summary.get('average_movements'):
+            logger.info(f"Average stance movement: {evolution_summary['average_movements']['mean']:.4f} ± {evolution_summary['average_movements']['std']:.4f}")
+        
+        # Generate visualization
+        visualizer = CardinalVisualizer(config_adapter, viz_dir=str(viz_dir))
+        visualizer.generate_stance_visualization_from_env(env)
+        logger.info("Stance progression visualization generated successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to generate visualization: {e}")
 
 
 if __name__ == "__main__":

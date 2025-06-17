@@ -184,37 +184,41 @@ conclave/prompting/    # Renamed from conclave/config/
 
 **Goal:** Address LLM output quality issues, improve discussion workflows, and implement sophisticated agent behavior patterns.
 
-### **A. LLM Output Quality Improvements**
+### **✅ A. LLM Output Quality Improvements - COMPLETED**
 
-**Current Issues:**
-- Short and incomplete LLM outputs due to over-querying
-- Agents posing questions in non-interactive discussion format
+**Issues Resolved:**
+- ✅ **JSON Parsing Fixed**: Enhanced parsing to handle escaped quotes properly
+- ✅ **Full Response Logging**: Complete LLM responses now logged before parsing
+- ✅ **Quality Monitoring**: Retry mechanisms with enhanced context already implemented
+- ✅ **Rate Limiting**: Configurable delays between LLM calls already implemented
 
-**Solutions:**
-- **Rate Limiting**: Configurable delays between LLM calls
-- **Quality Monitoring**: Retry with enhanced context if responses are too short
-- **Context Optimization**: Reduce unnecessary prompt content
-- **Temperature Control**: Configurable settings for response quality
+### **✅ B. Discussion Prompt Redesign - COMPLETED**
 
-### **B. Discussion Prompt Redesign**
+**✅ Implemented Lean, High-Immersion Discussion Prompts:**
+- ✅ **Formal Name Usage**: Agents now address colleagues as "Your Eminence Cardinal [Name]" instead of using system tags
+- ✅ **Structured Format**: 4-slot format (Position, Appeal/Concession, Coalition Path, Vote) with token limits
+- ✅ **Room Support Counts**: Real-time display of declared supporters in each discussion room (e.g., "Parolin 2 · Tagle 1 · Undecided 4")
+- ✅ **Rhetorical Appeals**: Slot ② changed to rhetorical appeals/concessions, no obligation to answer questions
+- ✅ **Compact Format**: ≤ 110 tokens per speech, template under 500 tokens for 7-member room
+- ✅ **Citation Guidelines**: Limited to ≤ 4 quoted words, encourages paraphrasing
 
-**Strategy Changes:**
-- **Rhetorical Questions Only**: Eliminate direct questions expecting responses
-- **Statement-Based Communication**: Emphasize declarative statements
-- **Memory-Based References**: Reference previous round concerns
-- **Addressable Concerns**: Focus on addressing rather than asking
+**New Variables Implemented:**
+- ✅ `room_support_counts`: Shows current support levels within discussion group
+- ✅ `elector_count`: Total number of electors 
+- ✅ `threshold`: Calculated using round() instead of ceil() for fairer thresholds
 
-### **C. Advanced Agent Workflows**
+### **✅ C. Advanced Agent Workflows - COMPLETED**
 
-**Parallel Stance Generation:**
-- Orchestrated by `ConclaveEnv` before first round and after discussions
-- Uses `ThreadPoolExecutor` with `tqdm` progress visualization
-- Context varies by round (initial vs. revised stances)
+**✅ Parallel Stance Generation:**
+- ✅ Orchestrated by `ConclaveEnv` before first round and after discussions
+- ✅ Uses `ThreadPoolExecutor` with `tqdm` progress visualization
+- ✅ Context varies by round (initial vs. revised stances)
 
-**Post-Round Embedding Updates:**
-- Re-compute embeddings after each voting phase
-- Voting-based color coding for visualization
-- Dynamic alliance tracking through color evolution
+**✅ Post-Round Embedding Updates:**
+- ✅ Automatic embedding re-computation after each stance generation
+- ✅ Enhanced visualization using pre-computed embeddings
+- ✅ Distance calculation functions (cosine, Euclidean, Manhattan)
+- ✅ Evolution tracking with agent embedding history
 
 ## VII. Discussion Reflection System
 
@@ -243,6 +247,10 @@ conclave/prompting/    # Renamed from conclave/config/
 - `BaseAgent.reflect_on_discussion()`: Generate reflection digests
 - Enhanced stance generation incorporating reflection context
 - Helper methods for data extraction and validation
+
+### **C. Improve stance prompting
+- currently too verbose and doesnt translate well into the embedder. too much fluff, not enough direct and to the point.
+
 
 ## VIII. Embedding and Visualization System Upgrades
 
@@ -277,6 +285,7 @@ conclave/prompting/    # Renamed from conclave/config/
 **Logger Categories:**
 - `conclave.agents`: Agent actions, decisions, stance changes
 - `conclave.llm`: Prompts, responses, tool calls, errors
+  - **CURRENT PRIORITY:** Diagnose and fix missing INFO/DEBUG level logs for tool call outputs in `llm_io.log`. Ensure all LLM interactions, especially discussion tool usage, are fully logged.
 - `conclave.system`: Simulation lifecycle, configuration loading
 - `conclave.performance`: Timing measurements and metrics
 
@@ -343,6 +352,7 @@ simulation_output/
 3. **Module Integration**
    - Update agent classes to use `conclave.agents` logger
    - Update LLM modules to use `conclave.llm` logger
+     - **CURRENT PRIORITY:** Verify logger instantiation, handler attachment, filter logic, and propagation for `conclave.llm` to resolve missing tool call logs in `llm_io.log`.
    - Update environment to use `conclave.system` logger
    - Add performance logging to key operations
 

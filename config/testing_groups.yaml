@@ -44,7 +44,7 @@ testing_groups:
     description: Medium testing group with regional and theological balance
     override_settings:
       num_cardinals: 15
-      discussion_group_size: 4
+      discussion_group_size: 5
       max_election_rounds: 6
       supermajority_threshold: 0.667
   large:

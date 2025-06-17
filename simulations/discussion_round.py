@@ -84,6 +84,9 @@ def main():
             logger.info(f"\n=== ELECTION ROUND {election_round} ===")
             print(f"\nStarting Election Round {election_round}")
 
+            # Set the voting round in the environment to match the election round
+            env.votingRound = election_round
+
             # REMOVED: env.reset_discussion_speakers_for_new_election_round()
 
             # Run a full discussion phase (which now handles groups internally)
@@ -140,6 +143,15 @@ def main():
             logger.error(f"Error saving simulation summary: {e}")
 
         # Generate stance progression visualization using CardinalVisualizer
+        # First ensure all embeddings are updated
+        env.update_all_embeddings_after_simulation()
+        
+        # Log embedding evolution summary
+        evolution_summary = env.get_embedding_evolution_summary()
+        logger.info(f"Embedding evolution summary: {evolution_summary.get('agents_with_embeddings', 0)}/{evolution_summary.get('total_agents', 0)} agents have embeddings")
+        if evolution_summary.get('average_movements'):
+            logger.info(f"Average stance movement: {evolution_summary['average_movements']['mean']:.4f} ± {evolution_summary['average_movements']['std']:.4f}")
+        
         visualizer = CardinalVisualizer(
             config_manager, viz_dir=str(viz_dir)
         )  # Pass config_manager

@@ -60,8 +60,8 @@ class PromptVariableGenerator:
         # Calculate votes needed for supermajority
         num_total_agents = self.env.num_agents
         supermajority_fraction = self.env.supermajority_threshold
-        # Use math.ceil() for closest integer, ensuring it reflects votes needed to win
-        votes_needed = math.ceil(supermajority_fraction * num_total_agents) 
+        # Use round() for closest integer, ensuring it reflects votes needed to win
+        votes_needed = round(supermajority_fraction * num_total_agents) 
         variables['threshold'] = int(votes_needed)
 
         if discussion_group_ids is not None:
@@ -141,6 +141,8 @@ class PromptVariableGenerator:
         """Generate group-specific variables for discussion prompts."""
         return {
             'group_profiles': self.generate_group_profiles(participant_ids),
+            'room_support_counts': self.generate_room_support_counts(participant_ids),
+            'elector_count': self.env.num_agents,
         }
 
     def get_visible_candidates_ids(self) -> List[int]:
@@ -384,6 +386,58 @@ class PromptVariableGenerator:
         """
         return self.generate_visible_candidates(include_cardinal_id=True)
 
+    def generate_room_support_counts(self, participant_ids: List[int]) -> str:
+        """
+        Generate room support counts showing declared supporters in this discussion group.
+        Format: "Parolin 2 · Tagle 1 · Arinze 0 · Undecided 4"
+        """
+        try:
+            # Use the latest individual votes if available
+            if not hasattr(self.env, 'individual_votes_history') or not self.env.individual_votes_history:
+                # Fallback: no voting data available yet
+                return f"Room composition: {len(participant_ids)} participants (no voting data yet)"
+            
+            latest_individual_votes = self.env.individual_votes_history[-1] if self.env.individual_votes_history else {}
+            
+            # Count support for each visible candidate among room participants
+            support_counts = {}
+            undecided_count = 0
+            
+            # Get visible candidates (top candidates getting votes)
+            visible_candidate_ids = self.get_visible_candidates_ids()
+            
+            for participant_id in participant_ids:
+                if participant_id in latest_individual_votes:
+                    # This participant voted for someone
+                    voted_for = latest_individual_votes[participant_id]
+                    if voted_for < len(self.env.agents):
+                        candidate_name = self.env.agents[voted_for].name
+                        support_counts[candidate_name] = support_counts.get(candidate_name, 0) + 1
+                    else:
+                        undecided_count += 1
+                else:
+                    # This participant didn't vote or their vote isn't recorded
+                    undecided_count += 1
+            
+            # Build the support count string for top candidates
+            parts = []
+            for candidate_id in visible_candidate_ids[:3]:  # Show top 3 candidates
+                if candidate_id < len(self.env.agents):
+                    candidate_name = self.env.agents[candidate_id].name
+                    count = support_counts.get(candidate_name, 0)
+                    parts.append(f"{candidate_name} {count}")
+            
+            # Always show total room size for verification
+            total_participants = len(participant_ids)
+            if parts:
+                room_info = " · ".join(parts)
+                return f"**Room composition**: {room_info}"
+            else:
+                return f"**Room composition**: {total_participants} participants (no clear support pattern)"
+            
+        except Exception as e:
+            self.logger.warning(f"Error generating room support counts: {e}")
+            return f"**Room composition**: {len(participant_ids)} participants (support counts unavailable)"
 
     # Helper methods (potentially move to a utils module or keep private)
     def _get_agent_profile_blurb(self, agent_id: int) -> str:

@@ -21,6 +21,7 @@ from enum import Enum
 from ..prompting.prompt_models import ToolDefinition # Updated import path
 
 logger = logging.getLogger("conclave.llm") # NEW LOGGER - for tool calling, associated with LLM operations
+print(f"ROBUST_TOOLS.PY: Initializing conclave.llm logger. ID: {id(logger)}, Name: {logger.name}, Effective level: {logging.getLevelName(logger.getEffectiveLevel())}, Handlers: {logger.handlers}, Propagate: {logger.propagate}, Disabled: {logger.disabled}")
 
 class ToolCallStrategy(Enum):
     """Strategy for tool calling."""
@@ -92,19 +93,35 @@ class JSONParser:
     
     @staticmethod
     def _extract_json_balanced_braces(text: str) -> Optional[str]:
-        """Extract JSON using balanced brace counting."""
+        """Extract JSON using balanced brace counting with proper quote handling."""
         start_pos = text.find('{')
         if start_pos == -1:
             return None
         
         brace_count = 0
+        in_string = False
+        escape_next = False
+        
         for i, char in enumerate(text[start_pos:], start_pos):
-            if char == '{':
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    return text[start_pos:i+1]
+            if escape_next:
+                escape_next = False
+                continue
+                
+            if char == '\\':
+                escape_next = True
+                continue
+                
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+                
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        return text[start_pos:i+1]
         return None
     
     @staticmethod
@@ -138,14 +155,8 @@ class JSONParser:
         if not text:
             return ToolCallResult(success=False, error="Empty response")
         
-        logger.debug(f"=== PARSING TOOL RESPONSE ===")
-        logger.debug(f"Input text length: {len(text)}")
-        logger.debug(f"Input text preview: {repr(text[:100])}")
-        
         # Clean the text first
         cleaned_text = cls.clean_text(text)
-        logger.debug(f"Cleaned text length: {len(cleaned_text)}")
-        logger.debug(f"Cleaned text preview: {repr(cleaned_text[:100])}")
         
         # Try each extraction method
         for i, method in enumerate(cls.extract_json_methods()):
@@ -424,7 +435,7 @@ class RobustToolCaller:
         
         # All attempts failed
         self.logger.error(f"All {self.max_retries + 1} attempts failed for {self.model_name}")
-        # Ensure result is defined in case all attempts fail before result is assigned
+        # Ensure result is defined in case all attempts fail
         if 'result' not in locals() or result is None: # MODIFIED: Added 'or result is None'
             # Create a default error result if no strategy was even attempted or if 'result' was not set
             return ToolCallResult(
@@ -611,9 +622,15 @@ class RobustToolCaller:
             # Generate response
             response_text = self.llm_client.generate(enhanced_messages)
             
+            # Log the full response before parsing
+            self.logger.info(f"Full LLM response before parsing (length: {len(response_text)}): {response_text}")
+            
             # Parse the response
             result = JSONParser.parse_tool_response(response_text)
             result.strategy_used = ToolCallStrategy.PROMPT_BASED
+            
+            # Log the parsed result
+            self.logger.info(f"Parsed result - Success: {result.success}, Function: {result.function_name}, Args: {result.arguments}")
             
             return result
             
@@ -752,8 +769,10 @@ Example of a desired output format: {{"result": "some value", "status": "success
             for attempt in range(max_retries):
                 logger.debug(f"Attempt {attempt + 1} for prompt-based tool call simulation.")
                 
-                response_text = self.llm_client.generate_response(prompt_messages) 
+                response_text = self.llm_client.generate(prompt_messages) 
                 logger.debug(f"Prompt-based LLM raw response: {response_text}")
+                # Log the full response before parsing
+                logger.info(f"Full LLM response before parsing (length: {len(response_text)}): {response_text}")
                 
                 # Pass tool_choice to parse_tool_response if it needs it,
                 # or handle the logic of comparing parsed_result.function_name with tool_choice here.
@@ -780,3 +799,21 @@ Example of a desired output format: {{"result": "some value", "status": "success
         except Exception as e:
             logger.error(f"Error during prompt-based tool call: {e}", exc_info=True)
             return ToolCallResult(success=False, error=f"Prompt-based tool calling error: {str(e)}", strategy_used=ToolCallStrategy.PROMPT_BASED)
+    
+    async def _call_llm_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: Optional[Union[str, Dict[str, Any]]],
+        strategy: ToolCallStrategy
+    ) -> ToolCallResult:
+        logger.critical("CRITICAL_TEST: _call_llm_with_tools called AT THE VERY BEGINNING")
+        print(f"ROBUST_TOOLS.PY: _call_llm_with_tools: CONCLAVE.LLM logger state: Handlers: {logger.handlers}, Name: {logger.name}, Effective level: {logging.getLevelName(logger.getEffectiveLevel())}, Propagate: {logger.propagate}, Disabled: {logger.disabled}")
+        # ... existing code ...
+    
+    def parse_tool_calls(self, text: str, strategy_used: ToolCallStrategy) -> List[ToolCallResult]:
+        """Parse tool calls from the model\'s response text.\"\"\"
+        logger.critical("CRITICAL_TEST: parse_tool_calls called AT THE VERY BEGINNING")
+        print(f"ROBUST_TOOLS.PY: parse_tool_calls: CONCLAVE.LLM logger state: Handlers: {logger.handlers}, Name: {logger.name}, Effective level: {logging.getLevelName(logger.getEffectiveLevel())}, Propagate: {logger.propagate}, Disabled: {logger.disabled}")
+        if not text or not text.strip():
+            logger.warning("Attempted to parse empty or whitespace-only text for tool calls.")

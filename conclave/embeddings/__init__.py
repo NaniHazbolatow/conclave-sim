@@ -266,6 +266,134 @@ class EmbeddingClient:
         if self._embedding_cache:
             self._embedding_cache.clear()
             logger.info("Embedding cache cleared")
+    
+    def euclidean_distance(self, 
+                          embedding1: Union[str, np.ndarray], 
+                          embedding2: Union[str, np.ndarray]) -> float:
+        """
+        Calculate Euclidean distance between two embeddings.
+        
+        Args:
+            embedding1: First embedding (text or embedding vector)
+            embedding2: Second embedding (text or embedding vector)
+            
+        Returns:
+            Euclidean distance (0 = identical, higher = more different)
+        """
+        # Convert texts to embeddings if needed
+        if isinstance(embedding1, str):
+            embedding1 = self.get_embedding(embedding1)
+        if isinstance(embedding2, str):
+            embedding2 = self.get_embedding(embedding2)
+        
+        return np.linalg.norm(embedding1 - embedding2)
+    
+    def cosine_distance(self, 
+                       embedding1: Union[str, np.ndarray], 
+                       embedding2: Union[str, np.ndarray]) -> float:
+        """
+        Calculate cosine distance between two embeddings.
+        
+        Args:
+            embedding1: First embedding (text or embedding vector)
+            embedding2: Second embedding (text or embedding vector)
+            
+        Returns:
+            Cosine distance (0 = identical, 2 = opposite, 1 = orthogonal)
+        """
+        similarity = self.cosine_similarity(embedding1, embedding2)
+        return 1 - similarity
+    
+    def manhattan_distance(self, 
+                          embedding1: Union[str, np.ndarray], 
+                          embedding2: Union[str, np.ndarray]) -> float:
+        """
+        Calculate Manhattan (L1) distance between two embeddings.
+        
+        Args:
+            embedding1: First embedding (text or embedding vector)
+            embedding2: Second embedding (text or embedding vector)
+            
+        Returns:
+            Manhattan distance (0 = identical, higher = more different)
+        """
+        # Convert texts to embeddings if needed
+        if isinstance(embedding1, str):
+            embedding1 = self.get_embedding(embedding1)
+        if isinstance(embedding2, str):
+            embedding2 = self.get_embedding(embedding2)
+        
+        return np.sum(np.abs(embedding1 - embedding2))
+    
+    def compute_agent_embeddings(self, agents: List) -> Dict[str, np.ndarray]:
+        """
+        Compute embeddings for all agent stances.
+        
+        Args:
+            agents: List of agents with internal_stance attribute
+            
+        Returns:
+            Dictionary mapping agent names to their stance embeddings
+        """
+        agent_stances = {}
+        stance_texts = []
+        agent_names = []
+        
+        for agent in agents:
+            if hasattr(agent, 'internal_stance') and agent.internal_stance:
+                agent_stances[agent.name] = agent.internal_stance
+                stance_texts.append(agent.internal_stance)
+                agent_names.append(agent.name)
+        
+        if not stance_texts:
+            return {}
+        
+        # Compute all embeddings at once for efficiency
+        embeddings = self.get_embeddings(stance_texts)
+        
+        # Map embeddings back to agent names
+        agent_embeddings = {}
+        for i, agent_name in enumerate(agent_names):
+            agent_embeddings[agent_name] = embeddings[i]
+        
+        return agent_embeddings
+    
+    def update_agent_embeddings_in_history(self, agents: List, round_num: int) -> None:
+        """
+        Update the embedding history for all agents after stance generation.
+        
+        Args:
+            agents: List of agents with stance_history
+            round_num: Current round number
+        """
+        logger.info(f"Updating embeddings for round {round_num}...")
+        
+        for agent in agents:
+            if hasattr(agent, 'stance_history') and agent.stance_history:
+                # Get the latest stance for this round
+                latest_stance = None
+                for stance_entry in reversed(agent.stance_history):
+                    if isinstance(stance_entry, dict):
+                        if stance_entry.get('round', -1) == round_num:
+                            latest_stance = stance_entry.get('stance', '')
+                            break
+                    else:
+                        # Handle old format - assume it's the latest if we're here
+                        latest_stance = stance_entry
+                        break
+                
+                if latest_stance:
+                    # Generate embedding for this stance
+                    embedding = self.get_embedding(latest_stance)
+                    
+                    # Store embedding in agent's embedding history
+                    if not hasattr(agent, 'embedding_history'):
+                        agent.embedding_history = {}
+                    
+                    agent.embedding_history[round_num] = embedding
+                    logger.debug(f"Updated embedding for {agent.name} round {round_num}")
+        
+        logger.info(f"Embeddings updated for round {round_num}")
 
 
 # Global client instance for easy access
@@ -286,8 +414,23 @@ def embed_text(text: str) -> np.ndarray:
 
 
 def similarity(text1: str, text2: str) -> float:
-    """Convenience function to calculate similarity between two texts."""
+    """Convenience function to calculate cosine similarity between two texts."""
     return get_default_client().cosine_similarity(text1, text2)
+
+
+def euclidean_distance(text1: str, text2: str) -> float:
+    """Convenience function to calculate Euclidean distance between two texts."""
+    return get_default_client().euclidean_distance(text1, text2)
+
+
+def cosine_distance(text1: str, text2: str) -> float:
+    """Convenience function to calculate cosine distance between two texts.""" 
+    return get_default_client().cosine_distance(text1, text2)
+
+
+def manhattan_distance(text1: str, text2: str) -> float:
+    """Convenience function to calculate Manhattan distance between two texts."""
+    return get_default_client().manhattan_distance(text1, text2)
 
 
 def find_similar(query: str, 
