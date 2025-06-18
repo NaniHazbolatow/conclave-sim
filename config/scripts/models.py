@@ -85,6 +85,26 @@ class VotingConfig(BaseModel):
     supermajority_threshold: float = Field(default=0.667, description="Threshold for electing Pope (2/3)")
 
 
+class UtilityWeightsConfig(BaseModel):
+    """Utility weights for network-based grouping."""
+    connection: float = Field(default=1.0, description="Connection strength weight")
+    ideology: float = Field(default=0.5, description="Ideological proximity weight")
+    influence: float = Field(default=0.2, description="Influenceability weight")
+    interaction: float = Field(default=0.0, description="Interaction term weight")
+
+
+class GroupingConfig(BaseModel):
+    """Network-based grouping configuration."""
+    enabled: bool = Field(default=True, description="Enable network-based grouping")
+    method: str = Field(default="network_utility", description="Grouping method: 'network_utility', 'random', 'simple'")
+    group_size: int = Field(default=5, description="Target size for discussion groups")
+    min_group_size: int = Field(default=3, description="Minimum size for discussion groups (prevents groups that are too small)")
+    utility_weights: UtilityWeightsConfig = Field(default_factory=UtilityWeightsConfig)
+    stochasticity: float = Field(default=0.5, description="Stochasticity in member selection (0.0=deterministic, 1.0=random)")
+    leader_stochasticity: float = Field(default=0.1, description="Stochasticity in leader selection")
+    seed: Optional[int] = Field(default=42, description="Random seed for reproducible results")
+
+
 class SimulationConfig(BaseModel):
     """Core simulation parameters."""
     num_cardinals: int = Field(default=5, description="Number of cardinals in simulation")
@@ -92,6 +112,8 @@ class SimulationConfig(BaseModel):
     max_election_rounds: int = Field(default=5, description="Maximum election rounds before stopping")
     discussion_length: DiscussionLengthConfig = Field(default_factory=DiscussionLengthConfig)
     voting: VotingConfig = Field(default_factory=VotingConfig)
+    enable_parallel_processing: bool = Field(True, description="Enable or disable parallel processing for agent actions.")
+    grouping: GroupingConfig = Field(default_factory=GroupingConfig, description="Network-based grouping configuration")
 
 
 # ===================================================================
@@ -192,6 +214,8 @@ class TestingGroupSettings(BaseModel):
     discussion_group_size: int
     max_election_rounds: int
     supermajority_threshold: float
+    enable_parallel_processing: bool = Field(True, description="Enable or disable parallel processing for agent actions.")
+    grouping: Optional[GroupingConfig] = Field(default=None, description="Optional grouping configuration override")
 
 
 class TestingGroup(BaseModel):

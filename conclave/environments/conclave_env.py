@@ -14,6 +14,7 @@ from conclave.prompting.prompt_loader import PromptLoader # Corrected import to 
 from conclave.prompting.unified_generator import UnifiedPromptVariableGenerator
 from conclave.config import get_config_manager # Use centralized config management
 from conclave.llm import get_llm_client, SimplifiedToolCaller # Use new simplified tool calling
+from conclave.network.network_manager import NetworkManager # Add network manager import
 from config.scripts.models import RefactoredConfig
 
 if TYPE_CHECKING:
@@ -97,6 +98,10 @@ class ConclaveEnv:
         self.max_discussion_words = self.simulation_config.discussion_length.max_words
 
         self.supermajority_threshold = self.simulation_config.voting.supermajority_threshold
+        self.enable_parallel_processing = self.simulation_config.enable_parallel_processing
+
+        # Initialize network manager for grouping
+        self.network_manager = NetworkManager(self.config_manager)
 
         # Testing groups configuration (if enabled)
         if self.app_config.testing_groups and self.app_config.testing_groups.enabled:
@@ -110,6 +115,7 @@ class ConclaveEnv:
             self.discussion_group_size = active_group_details.override_settings.discussion_group_size
             self.max_election_rounds = active_group_details.override_settings.max_election_rounds
             self.supermajority_threshold = active_group_details.override_settings.supermajority_threshold
+            self.enable_parallel_processing = active_group_details.override_settings.enable_parallel_processing
             logger.info(f"RUNNING WITH TESTING GROUP: {self.active_testing_group_name}")
             logger.info(f"  Num Cardinals: {self.num_agents}")
             logger.info(f"  Discussion Group Size: {self.discussion_group_size}")
@@ -123,6 +129,10 @@ class ConclaveEnv:
         # print("ConclaveEnv.__init__: Calling _initialize_agents...") # DEBUG PRINT
         self.agents = self._initialize_agents()
         # print("ConclaveEnv.__init__: _initialize_agents DONE.") # DEBUG PRINT
+        
+        # Initialize network after agents are loaded
+        self.network_manager.initialize_network(self.agents)
+        
         # print("ConclaveEnv.__init__ FINISHED") # DEBUG PRINT
 
     def _initialize_agents(self) -> List[Agent]:
@@ -286,14 +296,19 @@ class ConclaveEnv:
         
         logger.info(f"Updating internal stances for all {len(agents_to_update)} agents...")
         
-        # Update stances in parallel
-        # Consider making max_workers configurable
-        with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_update))) as executor: 
-            futures = [executor.submit(agent.generate_internal_stance) for agent in agents_to_update]
-            # Wait for all futures to complete
-            # The disable=True for tqdm might be from old config, consider if it should be dynamic
-            for future in tqdm(futures, desc="Generating Stances", total=len(futures), disable=not self.output_config.logging.performance_logging):
-                future.result()  # This blocks until the task completes
+        if self.enable_parallel_processing:
+            # Update stances in parallel
+            # Consider making max_workers configurable
+            with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_update))) as executor: 
+                futures = [executor.submit(agent.generate_internal_stance) for agent in agents_to_update]
+                # Wait for all futures to complete
+                # The disable=True for tqdm might be from old config, consider if it should be dynamic
+                for future in tqdm(futures, desc="Generating Stances", total=len(futures), disable=not self.output_config.logging.performance_logging):
+                    future.result()  # This blocks until the task completes
+        else:
+            # Update stances sequentially
+            for agent in tqdm(agents_to_update, desc="Generating Stances Sequentially", disable=not self.output_config.logging.performance_logging):
+                agent.generate_internal_stance()
         
         # Log completion and summary
         updated_count = sum(1 for agent in agents_to_update if agent.internal_stance) # Make sure agent.internal_stance is the correct attribute
@@ -325,14 +340,19 @@ class ConclaveEnv:
         """
         logger.info(f"Generating initial internal stances for {len(self.agents)} agents...")
         
-        # Generate initial stances in parallel
-        # Consider making max_workers configurable
-        with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(self.agents))) as executor: 
-            futures = [executor.submit(agent.generate_internal_stance) for agent in self.agents]
-            # Wait for all futures to complete
-            # The disable=True for tqdm might be from old config, consider if it should be dynamic
-            for future in tqdm(futures, desc="Generating Initial Stances", total=len(futures), disable=not self.output_config.logging.performance_logging):
-                future.result()  # This blocks until the task completes
+        if self.enable_parallel_processing:
+            # Generate initial stances in parallel
+            # Consider making max_workers configurable
+            with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(self.agents))) as executor: 
+                futures = [executor.submit(agent.generate_internal_stance) for agent in self.agents]
+                # Wait for all futures to complete
+                # The disable=True for tqdm might be from old config, consider if it should be dynamic
+                for future in tqdm(futures, desc="Generating Initial Stances", total=len(futures), disable=not self.output_config.logging.performance_logging):
+                    future.result()  # This blocks until the task completes
+        else:
+            # Generate initial stances sequentially
+            for agent in tqdm(self.agents, desc="Generating Initial Stances Sequentially", disable=not self.output_config.logging.performance_logging):
+                agent.generate_internal_stance()
         
         logger.info("Initial internal stances generated for all agents")
         
@@ -375,19 +395,29 @@ class ConclaveEnv:
         if not current_discussion_groups:
             logger.warning("No discussion groups were formed. Skipping discussion processing.")
         else:
-            logger.info(f"Processing {len(current_discussion_groups)} discussion groups in parallel.")
-            with ThreadPoolExecutor(max_workers=self.num_discussion_groups if self.num_discussion_groups > 0 else 1) as executor:
-                futures = []
-                for group_idx, group_agent_ids in enumerate(current_discussion_groups):
-                    futures.append(executor.submit(self._process_discussion_group, group_idx, group_agent_ids, self.discussionRound))
-                
-                for future in tqdm(futures, desc=f"Processing Discussion Groups & Analyzing (ER {self.votingRound})", total=len(futures), disable=self.output_config.tqdm.disable_tqdm): # Use ER, remove DP
+            if self.enable_parallel_processing:
+                logger.info(f"Processing {len(current_discussion_groups)} discussion groups in parallel.")
+                with ThreadPoolExecutor(max_workers=self.num_discussion_groups if self.num_discussion_groups > 0 else 1) as executor:
+                    futures = []
+                    for group_idx, group_agent_ids in enumerate(current_discussion_groups):
+                        futures.append(executor.submit(self._process_discussion_group, group_idx, group_agent_ids, self.discussionRound))
+                    
+                    for future in tqdm(futures, desc=f"Processing Discussion Groups & Analyzing (ER {self.votingRound})", total=len(futures), disable=self.output_config.tqdm.disable_tqdm): # Use ER, remove DP
+                        try:
+                            group_comments = future.result() # _process_discussion_group now only returns comments
+                            if group_comments:
+                                all_comments_for_phase.extend(group_comments)
+                        except Exception as e:
+                            logger.error(f"Error processing a discussion group future: {e}", exc_info=True)
+            else:
+                logger.info(f"Processing {len(current_discussion_groups)} discussion groups sequentially.")
+                for group_idx, group_agent_ids in enumerate(tqdm(current_discussion_groups, desc=f"Processing Discussion Groups & Analyzing (ER {self.votingRound})", disable=self.output_config.tqdm.disable_tqdm)):
                     try:
-                        group_comments = future.result() # _process_discussion_group now only returns comments
+                        group_comments = self._process_discussion_group(group_idx, group_agent_ids, self.discussionRound)
                         if group_comments:
                             all_comments_for_phase.extend(group_comments)
                     except Exception as e:
-                        logger.error(f"Error processing a discussion group future: {e}", exc_info=True)
+                        logger.error(f"Error processing discussion group {group_idx}: {e}", exc_info=True)
             
             if self.discussionHistory and len(self.discussionHistory) >= self.discussionRound:
                  self.discussionHistory[self.discussionRound -1] = all_comments_for_phase
@@ -512,13 +542,45 @@ class ConclaveEnv:
 
     def _generate_discussion_group_assignments(self) -> List[List[int]]:
         logger.debug("Entering _generate_discussion_group_assignments")
+        
+        # Get grouping configuration
+        grouping_config = self.simulation_config.grouping if hasattr(self.simulation_config, 'grouping') else {}
+        
+        # Override with testing group config if active
+        if self.testing_groups_enabled:
+            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
+            if hasattr(active_group_details.override_settings, 'grouping'):
+                grouping_config = active_group_details.override_settings.grouping
+                logger.info(f"Using testing group '{self.active_testing_group_name}' grouping configuration")
+        
+        # Use network manager to generate groups
+        try:
+            # Pass the Pydantic model directly to the network manager
+            groups = self.network_manager.generate_groups(grouping_config, self.agents)
+            
+            if not groups:
+                logger.warning("Network manager returned no groups, falling back to simple random grouping")
+                groups = self._generate_fallback_groups()
+            
+            # Log group assignment summary
+            summary = self.network_manager.get_group_summary()
+            logger.info(f"Generated {summary['total_groups']} discussion groups:")
+            logger.info(f"  Total agents: {summary['total_agents']}")
+            logger.info(f"  Group sizes: {summary['group_sizes']}")
+            logger.info(f"  Average group size: {summary['avg_group_size']:.1f}")
+            
+            # Store for reference
+            self._last_discussion_groups = groups
+            
+            return groups
+            
+        except Exception as e:
+            logger.error(f"Error generating network-based groups: {e}")
+            logger.warning("Falling back to simple random grouping")
+            return self._generate_fallback_groups()
 
-        # Creates randomized discussion groups for a full discussion cycle.
-        # Ensures groups have at least 2 agents if possible, by adjusting the last two groups
-        # if the last group would have only 1 agent.
-        # Stores the assignments in self._last_discussion_groups for later reference.
-        # Returns a list of lists, where each inner list contains agent_ids for a group.
-
+    def _generate_fallback_groups(self) -> List[List[int]]:
+        """Generate simple fallback groups when network grouping fails."""
         discussion_group_size = self.discussion_group_size
         
         if discussion_group_size < 2:
@@ -543,15 +605,15 @@ class ConclaveEnv:
             groups.append(agent_ids[i : i + discussion_group_size])
             i += discussion_group_size
 
+        # Avoid singleton groups
         if len(groups) > 1 and len(groups[-1]) == 1:
             if len(groups[-2]) > 0: 
                 element_to_move = groups[-2].pop()
                 groups[-1].insert(0, element_to_move)
         
-        self._last_discussion_groups = [g for g in groups if g] 
-        logger.debug(f"Generated discussion groups (list of lists): {self._last_discussion_groups}")
-        logger.debug("Exiting _generate_discussion_group_assignments")
-        return self._last_discussion_groups
+        groups = [g for g in groups if g]
+        logger.debug(f"Generated fallback discussion groups: {groups}")
+        return groups
 
     def _analyze_single_group_discussion(self, group_idx: int, group_agent_ids: List[int], group_transcript_comments: List[Dict[str, Any]]):
         """Analyzes a single group's discussion transcript and stores the result."""
@@ -679,61 +741,113 @@ class ConclaveEnv:
         
         agents_to_reflect = self.agents # All agents reflect
 
-        with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_reflect))) as executor:
-            futures = []
-            for agent in agents_to_reflect:
-                group_idx = agent_to_group_map.get(agent.agent_id)
-                analysis_summary_for_agent = "No analysis was available for your group." # Default
-                group_transcript_for_agent_str = "No specific group transcript available for this round." # Default
+        if self.enable_parallel_processing:
+            with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_reflect))) as executor:
+                futures = []
+                for agent in agents_to_reflect:
+                    group_idx = agent_to_group_map.get(agent.agent_id)
+                    analysis_summary_for_agent = "No analysis was available for your group." # Default
+                    group_transcript_for_agent_str = "No specific group transcript available for this round." # Default
 
-                if group_idx is not None:
-                    analysis_data = self.group_discussion_analyses.get(group_idx)
-                    if analysis_data:
-                        if analysis_data.get("error") is None and analysis_data.get("analysis_summary"):
-                            analysis_summary_for_agent = analysis_data["analysis_summary"]
-                            logger.debug(f"Agent {agent.name} (ID: {agent.agent_id}) in Group {group_idx + 1} will use analysis: {analysis_summary_for_agent[:100]}...")
-                        else:
-                            # Analysis failed or produced no summary, use default. Log the specific error if present.
-                            error_detail = analysis_data.get("error", "unknown reason")
-                            logger.warning(f"Analysis for Group {group_idx + 1} (Agent {agent.name}) was not successful or summary empty (error: {error_detail}). Agent will reflect with default message.")
+                    if group_idx is not None:
+                        analysis_data = self.group_discussion_analyses.get(group_idx)
+                        if analysis_data:
+                            if analysis_data.get("error") is None and analysis_data.get("analysis_summary"):
+                                analysis_summary_for_agent = analysis_data["analysis_summary"]
+                                logger.debug(f"Agent {agent.name} (ID: {agent.agent_id}) in Group {group_idx + 1} will use analysis: {analysis_summary_for_agent[:100]}...")
+                            else:
+                                # Analysis failed or produced no summary, use default. Log the specific error if present.
+                                error_detail = analysis_data.get("error", "unknown reason")
+                                logger.warning(f"Analysis for Group {group_idx + 1} (Agent {agent.name}) was not successful or summary empty (error: {error_detail}). Agent will reflect with default message.")
+                                # analysis_summary_for_agent remains the default "No analysis was available for your group."
+                        else: # Should not happen if _process_discussion_group always populates it
+                            logger.warning(f"No analysis data structure found for Group {group_idx + 1} (Agent {agent.name}). Agent will reflect with default message.")
                             # analysis_summary_for_agent remains the default "No analysis was available for your group."
-                    else: # Should not happen if _process_discussion_group always populates it
-                        logger.warning(f"No analysis data structure found for Group {group_idx + 1} (Agent {agent.name}). Agent will reflect with default message.")
-                        # analysis_summary_for_agent remains the default "No analysis was available for your group."
 
-                    if all_comments_this_phase and hasattr(self, '_last_discussion_groups') and group_idx < len(self._last_discussion_groups):
-                        group_agent_ids_for_transcript = self._last_discussion_groups[group_idx]
-                        comments_for_agent_group = [
-                            c for c in all_comments_this_phase 
-                            if isinstance(c.get('agent_id'), int) and c['agent_id'] in group_agent_ids_for_transcript
-                        ]
-                        
-                        formatted_transcript_list = []
-                        for comment_data in comments_for_agent_group:
-                            comment_agent_id = comment_data.get('agent_id')
-                            message = comment_data.get('message', '[message not found]')
-                            comment_agent_name = f"Agent {comment_agent_id}"
-                            if isinstance(comment_agent_id, int) and 0 <= comment_agent_id < len(self.agents):
-                                comment_agent_name = self.agents[comment_agent_id].name
-                            formatted_transcript_list.append(f"{comment_agent_name} (ID: {comment_agent_id}): {message}")
-                        group_transcript_for_agent_str = "\n".join(formatted_transcript_list)
-                        if not group_transcript_for_agent_str.strip():
-                             group_transcript_for_agent_str = "(No discussion took place in your group or messages were empty.)"
-                else:
-                    logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) was not found in any discussion group for round {self.discussionRound}. Reflecting generally.")
-                    # analysis_summary_for_agent and group_transcript_for_agent_str remain defaults
+                        if all_comments_this_phase and hasattr(self, '_last_discussion_groups') and group_idx < len(self._last_discussion_groups):
+                            group_agent_ids_for_transcript = self._last_discussion_groups[group_idx]
+                            comments_for_agent_group = [
+                                c for c in all_comments_this_phase 
+                                if isinstance(c.get('agent_id'), int) and c['agent_id'] in group_agent_ids_for_transcript
+                            ]
+                            
+                            formatted_transcript_list = []
+                            for comment_data in comments_for_agent_group:
+                                comment_agent_id = comment_data.get('agent_id')
+                                message = comment_data.get('message', '[message not found]')
+                                comment_agent_name = f"Agent {comment_agent_id}"
+                                if isinstance(comment_agent_id, int) and 0 <= comment_agent_id < len(self.agents):
+                                    comment_agent_name = self.agents[comment_agent_id].name
+                                formatted_transcript_list.append(f"{comment_agent_name} (ID: {comment_agent_id}): {message}")
+                            group_transcript_for_agent_str = "\n".join(formatted_transcript_list)
+                            if not group_transcript_for_agent_str.strip():
+                                 group_transcript_for_agent_str = "(No discussion took place in your group or messages were empty.)"
+                    else:
+                        logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) was not found in any discussion group for round {self.discussionRound}. Reflecting generally.")
+                        # analysis_summary_for_agent and group_transcript_for_agent_str remain defaults
 
-                # Call reflect_on_discussion with the correct arguments
-                futures.append(executor.submit(agent.reflect_on_discussion, 
-                                               analysis_summary_for_agent, 
-                                               group_transcript_for_agent_str, 
-                                               self.discussionRound))
+                    # Call reflect_on_discussion with the correct arguments
+                    futures.append(executor.submit(agent.reflect_on_discussion, 
+                                                   analysis_summary_for_agent, 
+                                                   group_transcript_for_agent_str, 
+                                                   self.discussionRound))
 
-            for future in tqdm(futures, desc=f"Agents Reflecting (ER {self.votingRound})", total=len(futures), disable=not self.output_config.logging.performance_logging): # Use ER, remove DP
+                for future in tqdm(futures, desc=f"Agents Reflecting (ER {self.votingRound})", total=len(futures), disable=not self.output_config.logging.performance_logging): # Use ER, remove DP
+                    try:
+                        future.result() 
+                    except Exception as e:
+                        logger.error(f"Error during an agent's reflection process: {e}", exc_info=True)
+        else:
+            # Sequential reflection
+            for agent in tqdm(agents_to_reflect, desc=f"Agents Reflecting Sequentially (ER {self.votingRound})", disable=not self.output_config.logging.performance_logging):
                 try:
-                    future.result() 
+                    group_idx = agent_to_group_map.get(agent.agent_id)
+                    analysis_summary_for_agent = "No analysis was available for your group." # Default
+                    group_transcript_for_agent_str = "No specific group transcript available for this round." # Default
+
+                    if group_idx is not None:
+                        analysis_data = self.group_discussion_analyses.get(group_idx)
+                        if analysis_data:
+                            if analysis_data.get("error") is None and analysis_data.get("analysis_summary"):
+                                analysis_summary_for_agent = analysis_data["analysis_summary"]
+                                logger.debug(f"Agent {agent.name} (ID: {agent.agent_id}) in Group {group_idx + 1} will use analysis: {analysis_summary_for_agent[:100]}...")
+                            else:
+                                # Analysis failed or produced no summary, use default. Log the specific error if present.
+                                error_detail = analysis_data.get("error", "unknown reason")
+                                logger.warning(f"Analysis for Group {group_idx + 1} (Agent {agent.name}) was not successful or summary empty (error: {error_detail}). Agent will reflect with default message.")
+                                # analysis_summary_for_agent remains the default "No analysis was available for your group."
+                        else: # Should not happen if _process_discussion_group always populates it
+                            logger.warning(f"No analysis data structure found for Group {group_idx + 1} (Agent {agent.name}). Agent will reflect with default message.")
+                            # analysis_summary_for_agent remains the default "No analysis was available for your group."
+
+                        if all_comments_this_phase and hasattr(self, '_last_discussion_groups') and group_idx < len(self._last_discussion_groups):
+                            group_agent_ids_for_transcript = self._last_discussion_groups[group_idx]
+                            comments_for_agent_group = [
+                                c for c in all_comments_this_phase 
+                                if isinstance(c.get('agent_id'), int) and c['agent_id'] in group_agent_ids_for_transcript
+                            ]
+                            
+                            formatted_transcript_list = []
+                            for comment_data in comments_for_agent_group:
+                                comment_agent_id = comment_data.get('agent_id')
+                                message = comment_data.get('message', '[message not found]')
+                                comment_agent_name = f"Agent {comment_agent_id}"
+                                if isinstance(comment_agent_id, int) and 0 <= comment_agent_id < len(self.agents):
+                                    comment_agent_name = self.agents[comment_agent_id].name
+                                formatted_transcript_list.append(f"{comment_agent_name} (ID: {comment_agent_id}): {message}")
+                            group_transcript_for_agent_str = "\n".join(formatted_transcript_list)
+                            if not group_transcript_for_agent_str.strip():
+                                 group_transcript_for_agent_str = "(No discussion took place in your group or messages were empty.)"
+                    else:
+                        logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) was not found in any discussion group for round {self.discussionRound}. Reflecting generally.")
+                        # analysis_summary_for_agent and group_transcript_for_agent_str remain defaults
+
+                    # Call reflect_on_discussion with the correct arguments
+                    agent.reflect_on_discussion(analysis_summary_for_agent, 
+                                               group_transcript_for_agent_str, 
+                                               self.discussionRound)
                 except Exception as e:
-                    logger.error(f"Error during an agent's reflection process: {e}", exc_info=True)
+                    logger.error(f"Error during agent {agent.name}'s reflection process: {e}", exc_info=True)
 
         logger.info(f"Agent reflection phase completed for Discussion Phase {self.discussionRound}.")
 
@@ -756,24 +870,40 @@ class ConclaveEnv:
             return None, {}
 
         logger.info(f"Collecting votes from {len(agents_to_vote)} agents for Election Round {self.votingRound}...") # Use ER
-        with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_vote))) as executor:
-            # Future -> agent_id mapping to correctly attribute votes even if order changes
-            future_to_agent_id = {executor.submit(agent.cast_vote, self.votingRound): agent.agent_id for agent in agents_to_vote}
-            
-            for future in tqdm(future_to_agent_id.keys(), desc=f"Collecting Votes (ER {self.votingRound})", total=len(agents_to_vote), disable=not self.output_config.logging.performance_logging): # Use ER
-                voter_agent_id = future_to_agent_id[future]
+        if self.enable_parallel_processing:
+            with ThreadPoolExecutor(max_workers=min(self.app_config.simulation.discussion_group_size, len(agents_to_vote))) as executor:
+                # Future -> agent_id mapping to correctly attribute votes even if order changes
+                future_to_agent_id = {executor.submit(agent.cast_vote, self.votingRound): agent.agent_id for agent in agents_to_vote}
+                
+                for future in tqdm(future_to_agent_id.keys(), desc=f"Collecting Votes (ER {self.votingRound})", total=len(agents_to_vote), disable=not self.output_config.logging.performance_logging): # Use ER
+                    voter_agent_id = future_to_agent_id[future]
+                    try:
+                        voted_for_candidate_id = future.result()
+                        if voted_for_candidate_id is not None and self.is_valid_vote_candidate(voted_for_candidate_id):
+                            self.individual_votes_buffer[voter_agent_id] = voted_for_candidate_id
+                            self.voting_participation[self.votingRound].append(voter_agent_id)
+                            logger.debug(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) voted for Agent {voted_for_candidate_id} (Candidate ID: {self.agents[voted_for_candidate_id].cardinal_id if hasattr(self.agents[voted_for_candidate_id], 'cardinal_id') else voted_for_candidate_id}).")
+                        elif voted_for_candidate_id is not None:
+                            logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) cast an invalid vote for candidate ID {voted_for_candidate_id}. Vote ignored.")
+                        else:
+                            logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) abstained or failed to vote.")
+                    except Exception as e:
+                        logger.error(f"Error collecting vote from Agent ID {voter_agent_id} ({self.agents[voter_agent_id].name}): {e}", exc_info=True)
+        else:
+            # Sequential voting
+            for agent in tqdm(agents_to_vote, desc=f"Collecting Votes Sequentially (ER {self.votingRound})", disable=not self.output_config.logging.performance_logging):
                 try:
-                    voted_for_candidate_id = future.result()
+                    voted_for_candidate_id = agent.cast_vote(self.votingRound)
                     if voted_for_candidate_id is not None and self.is_valid_vote_candidate(voted_for_candidate_id):
-                        self.individual_votes_buffer[voter_agent_id] = voted_for_candidate_id
-                        self.voting_participation[self.votingRound].append(voter_agent_id)
-                        logger.debug(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) voted for Agent {voted_for_candidate_id} (Candidate ID: {self.agents[voted_for_candidate_id].cardinal_id if hasattr(self.agents[voted_for_candidate_id], 'cardinal_id') else voted_for_candidate_id}).")
+                        self.individual_votes_buffer[agent.agent_id] = voted_for_candidate_id
+                        self.voting_participation[self.votingRound].append(agent.agent_id)
+                        logger.debug(f"Agent {agent.name} (ID: {agent.agent_id}) voted for Agent {voted_for_candidate_id} (Candidate ID: {self.agents[voted_for_candidate_id].cardinal_id if hasattr(self.agents[voted_for_candidate_id], 'cardinal_id') else voted_for_candidate_id}).")
                     elif voted_for_candidate_id is not None:
-                        logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) cast an invalid vote for candidate ID {voted_for_candidate_id}. Vote ignored.")
+                        logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) cast an invalid vote for candidate ID {voted_for_candidate_id}. Vote ignored.")
                     else:
-                        logger.warning(f"Agent {self.agents[voter_agent_id].name} (ID: {voter_agent_id}) abstained or failed to vote.")
+                        logger.warning(f"Agent {agent.name} (ID: {agent.agent_id}) abstained or failed to vote.")
                 except Exception as e:
-                    logger.error(f"Error collecting vote from Agent ID {voter_agent_id} ({self.agents[voter_agent_id].name}): {e}", exc_info=True)
+                    logger.error(f"Error collecting vote from Agent {agent.name} (ID: {agent.agent_id}): {e}", exc_info=True)
 
         # Tally votes from individual_votes_buffer
         for voter_id, candidate_id in self.individual_votes_buffer.items():

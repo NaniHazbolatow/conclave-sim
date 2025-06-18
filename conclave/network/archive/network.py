@@ -1,7 +1,10 @@
 # Custom functions
 from network_utils import add_networks, load_node_attributes, pope_candidate
 import os
-print(os.getcwd())
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 # Packages
 import polars as pl
@@ -118,7 +121,7 @@ def compute_utility(G, source, beta=(1.0, 1.0, 1.0, 1.0)):
 
 utilities = compute_utility(G_multiplex, source='Prevost')
 top_targets = sorted(utilities.items(), key=lambda x: x[1], reverse=True)[:10]
-print(top_targets)
+logging.info(f"Top 10 targets by utility: {top_targets}")
 
 #######################################
 ### Appendix: Extra Plot for Report ###
@@ -248,11 +251,11 @@ soft_liberals = sum(
     if str(d.get('Lean', '')).strip().lower() == 'soft liberal'
 )
 
-print(f"F-score (mean lean among electors): {f_score:.3f}")
-print(f"Number of conservatives in the college: {conservatives}")
-print(f"Number of soft conservatives in the college: {soft_conservatives}")
-print(f"Number of soft liberals in the college: {soft_liberals}")
-print(f"Number of liberals in the college: {liberals}")
+logging.info(f"F-score (mean lean among electors): {f_score:.3f}")
+logging.info(f"Number of conservatives in the college: {conservatives}")
+logging.info(f"Number of soft conservatives in the college: {soft_conservatives}")
+logging.info(f"Number of soft liberals in the college: {soft_liberals}")
+logging.info(f"Number of liberals in the college: {liberals}")
 
 # Final polish and export
 plt.title("Cardinal Network — Grouped by Political Lean", fontsize=18)

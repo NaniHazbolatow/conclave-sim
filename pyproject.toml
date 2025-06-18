@@ -25,6 +25,10 @@ dependencies = [
     "transformers>=4.46.0",
     "umap-learn>=0.5.7",
     "pytest>=8.0.0",
+    "polars>=1.30.0",
+    "networkx>=3.2.1",
+    "fuzzywuzzy>=0.18.0",
+    "python-levenshtein>=0.27.1",
 ]
 
 [tool.setuptools.packages.find]
