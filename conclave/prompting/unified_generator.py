@@ -150,8 +150,8 @@ class UnifiedPromptVariableGenerator:
         return {
             'current_timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'total_agents': len(self.env.agents),
-            'total_electors': len([a for a in self.env.agents if getattr(a, 'role_tag', 'ELECTOR') == 'ELECTOR']),
-            'elector_count': len(self.env.agents),  # Total number of electors
+            'total_electors': len(self.env.agents),  # All cardinals participate in conclave
+            'elector_count': len(self.env.agents),  # Total number of cardinals
             'current_round': getattr(self.env, 'votingRound', 0),  # Current voting round
             'current_round_number': getattr(self.env, 'votingRound', 0),  # Alias for current_round
             'max_rounds': getattr(self.env, 'max_election_rounds', 10),  # Maximum election rounds

@@ -54,26 +54,29 @@ external_profile_generator: |
 discussion_candidate: |
   ### Conclave Discussion {discussion_round} – Candidate Room
 
-  Electors = {elector_count} · Majority = {threshold}
-  Ballot tally: {compact_scoreboard}
-  **Room composition**: {room_support_counts}
+  Electors = {elector_count} · Majority = {threshold} ← a candidate must reach this number of votes to be elected
 
-  ── You are **Cardinal {agent_name}** (papabile) ──
+  Ballot tally: {compact_scoreboard}
+  **Room composition**: {room_support_counts}  
+  (The five interlocutors below all cast the votes shown in the tally.)
+
+  ── You are **Cardinal {agent_name}** (papabile) ──  
   Private stance: {stance_digest}
 
   Speak once in a single paragraph (≤ 110 tokens).
 
-  **Mandatory content (in any order)**  
-  • **Open** with a clause referencing the room-composition line.  
-  • State/defend your position and, if useful, make a rhetorical appeal or concession.  
-  • Include an explicit arithmetic path to the majority; only mention cardinals in the ballot tally.  
-  • End with your vote declaration (“I cast my vote for …”).
+  **Mandatory content**  
+  • **Open** by referencing the room-composition line (if not the first round), and acknowledge if your candidacy supported in the room.
+  • Weave in at least one ideological or pastoral value taken from your *private stance*.  
+  • Finish with your vote declaration.
+
+  **Optional**  
+  • You *may* sketch a coalition or majority path—but only if you are confident.
 
   **Guidelines**  
-  • Address others formally by name (“Your Eminence Cardinal …”)—never address yourself that way; use “I”.  
-  • Mention *your own* vote count once at most.  
-  • If no single arithmetic path can reach {threshold}, state the impasse briefly instead of inventing numbers.  
-  • No lists, bullet points or meta-commentary.
+  • Address others formally (“Your Eminence Cardinal …”) and never title yourself.  
+  • Mention your own current vote count at most once.  
+  • No lists, bullet points, or meta-commentary.
 
 # 1.4 DISCUSSION_ELECTOR
 # Variables: {agent_name}, {discussion_round}, {elector_count}, {threshold},
@@ -81,26 +84,28 @@ discussion_candidate: |
 discussion_elector: |
   ### Conclave Discussion {discussion_round} – Elector Room
 
-  Electors = {elector_count} · Majority = {threshold}
-  Ballot tally: {compact_scoreboard}
-  **Room composition**: {room_support_counts}
+  Electors = {elector_count} · Majority = {threshold} ← needed for a secure election
 
-  ── You are **Cardinal {agent_name}** (elector) ──
+  Ballot tally: {compact_scoreboard}
+  **Room composition**: {room_support_counts}  
+  (The five interlocutors below all cast the votes shown in the tally.)
+
+  ── You are **Cardinal {agent_name}** (elector) ──  
   Private stance: {stance_digest}
 
   Speak once in a single paragraph (≤ 110 tokens).
+  
+  **Mandatory content**  
+  • Inject at least one value, concern, or theological point drawn from your *private stance*.  
+  • Finish with your vote declaration.
 
-  **Mandatory content (in any order)**  
-  • Begin with a clause that references the room-composition line.  
-  • Offer a rhetorical appeal or concession that fits your stance.  
-  • Provide a concrete arithmetic coalition path to {threshold}, only naming cardinals from the tally.  
-  • Finish with your vote declaration.  
+  **Optional**  
+  • You may hint at how a coalition might form.
 
   **Guidelines**  
   • Address colleagues formally; never title yourself.  
-  • Turn is invalid if it contains a direct *question*; use rhetorical framing only.  
-  • If no feasible arithmetic path exists, acknowledge the dead-lock rather than fabricating sums.  
-  • Keep prose concise and relevant; no bullet points or meta-commentary.
+  • Only rhetorical questions are allowed.  
+  • Keep prose concise; no lists, bullet points, or meta-commentary.
 
 # 1.5 DISCUSSION_ANALYZER
 # Variables: {round_id}, {group_transcript_text}
@@ -158,7 +163,7 @@ discussion_reflection: |
 # {compact_scoreboard}, {visible_candidates}, {visible_candidates_ids}, {voting_round}, {threshold}
 stance: |
   #### {agent_name} – Internal Stance (Round {voting_round})
-  Role : {role_tag} (Target 2⁄3 = {threshold})  
+  Role : {role_tag} (secure election = {threshold})  
   Persona : {persona_internal}
 
   Vote & momentum : {compact_scoreboard}  
@@ -170,7 +175,7 @@ stance: |
   Decide privately →
   • Primary pick? • Backup if momentum fails? • Bargaining chips?
 
-  **Stance Digest (one sentence, ≤ 25 words; avoid filler):**
+  **Stance Digest (1 sentence, avoid filler. Use plain language.):**
 
 # 1.8 VOTING_CANDIDATE
 # Variables: {agent_name}, {persona_internal}, {stance_digest}, {compact_scoreboard}, 

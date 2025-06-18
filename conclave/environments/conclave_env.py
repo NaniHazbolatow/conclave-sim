@@ -7,7 +7,6 @@ from pathlib import Path # Add Path import
 from concurrent.futures import ThreadPoolExecutor # Add ThreadPoolExecutor import
 from tqdm import tqdm # Add tqdm import
 import pandas as pd # Add pandas import
-import numpy as np # Add numpy import
 
 from conclave.agents.base import Agent # For type hinting, removed AgentSettings, LLMSettings, EmbeddingSettings
 from conclave.prompting.prompt_loader import PromptLoader # Corrected import to use prompting
@@ -933,7 +932,8 @@ class ConclaveEnv:
             logger.info("No voters participated in this round. Cannot determine supermajority.")
             # Handle case with no voters - perhaps no winner or specific logic
         else:
-            votes_needed_for_supermajority = np.ceil(self.supermajority_threshold * num_voters_this_round)
+            # Use the same calculation as in prompts: int(total_electors * threshold)
+            votes_needed_for_supermajority = int(self.supermajority_threshold * num_voters_this_round)
             logger.info(f"Supermajority threshold: {self.supermajority_threshold * 100}%. Votes needed: {votes_needed_for_supermajority} out of {num_voters_this_round} voters this round.")
             
             # ADDED: Debug logging for winner determination
