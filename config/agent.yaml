@@ -1,5 +1,5 @@
 llm:
-  backend: remote
+  backend: local
   temperature: 0.7
   max_tokens: 500
   tool_calling:
@@ -8,10 +8,9 @@ llm:
     retry_backoff_sec: 2
     enable_fallback: true
   local:
-    model_name: meta-llama/llama-3.1-8b-instruct
+    model_name: meta-llama/Llama-3.1-8B-Instruct
     use_quantization: false
     device: auto
-    cache_dir: ~/.cache/huggingface
     do_sample: true
     top_p: 0.9
     repetition_penalty: 1.1

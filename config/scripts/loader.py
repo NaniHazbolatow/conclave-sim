@@ -7,7 +7,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from .models import RefactoredConfig, TestingGroupsConfig
 
 

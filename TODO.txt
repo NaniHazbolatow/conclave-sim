@@ -1,0 +1,13 @@
+- fix outputs
+- run multiple settings to see which is fastest
+- fix bugs of medium model nice
+
+
+
+- Bekijk hoeveel de kosten zijn, laat zien hoe je een snellius account maakt
+
+- Zorg ervoor dat logs goed in de output zitten.
+
+- Kijk of parallel wel lukt
+
+- Run verschillende batch scripts met verschillende input settings om snelheid te testen
