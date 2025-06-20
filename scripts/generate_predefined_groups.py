@@ -221,13 +221,7 @@ class PredefinedGroupsGenerator:
                 'candidate_ids': group_data['candidate_ids'],
                 'elector_ids': group_data['elector_ids'],
                 'description': f"{group_name.title()} group with {group_data['total_cardinals']} cardinals and {group_data['num_candidates']} candidates",
-                'ideology_balance': balance,
-                'override_settings': {
-                    'num_cardinals': group_data['total_cardinals'],
-                    'discussion_group_size': min(5, group_data['total_cardinals']),
-                    'max_election_rounds': max(1, group_data['total_cardinals'] // 5),
-                    'supermajority_threshold': 0.667
-                }
+                'ideology_balance': balance
             }
             
             print(f"  Cardinals: {group_data['total_cardinals']}")

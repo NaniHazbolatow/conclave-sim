@@ -7,6 +7,7 @@ from pathlib import Path # Add Path import
 from concurrent.futures import ThreadPoolExecutor # Add ThreadPoolExecutor import
 from tqdm import tqdm # Add tqdm import
 import pandas as pd # Add pandas import
+import numpy as np # Add numpy import for data export methods
 
 from conclave.agents.base import Agent # For type hinting, removed AgentSettings, LLMSettings, EmbeddingSettings
 from conclave.prompting.prompt_loader import PromptLoader # Corrected import to use prompting
@@ -1087,3 +1088,303 @@ class ConclaveEnv:
         if 0 <= agent_id < len(self.agents):
             return self.agents[agent_id]
         return None
+
+    def save_simulation_results(self, output_dir: Path, timestamp: str) -> None:
+        """
+        Save comprehensive simulation results including individual votes, embeddings, and enhanced summary.
+        
+        Args:
+            output_dir: Base output directory for the simulation
+            timestamp: Simulation timestamp for file naming
+        """
+        results_dir = output_dir / "results"
+        results_dir.mkdir(exist_ok=True)
+        
+        logger.info("Saving comprehensive simulation results...")
+        
+        # Save enhanced simulation summary
+        self._save_enhanced_simulation_summary(results_dir, timestamp)
+        
+        # Save individual voting data
+        self._save_individual_voting_data(results_dir)
+        
+        # Save stance embeddings
+        self._save_stance_embeddings(results_dir)
+        
+        # Save final round vote summary
+        self._save_final_round_votes(results_dir)
+        
+        logger.info("Simulation results saved successfully")
+    
+    def _save_enhanced_simulation_summary(self, results_dir: Path, timestamp: str) -> None:
+        """Save enhanced simulation summary with additional metadata."""
+        import json
+        
+        # Calculate additional statistics
+        total_agents = len(self.agents)
+        total_rounds = len(self.votingHistory)
+        
+        # Count agents with embeddings
+        agents_with_embeddings = sum(1 for agent in self.agents 
+                                   if hasattr(agent, 'embedding_history') and agent.embedding_history)
+        
+        # Count discussion participation
+        total_discussions = len(self.discussionHistory)
+        discussion_participation = {}
+        for round_idx, round_comments in enumerate(self.discussionHistory):
+            round_participants = set()
+            for comment in round_comments:
+                if isinstance(comment.get('agent_id'), int):
+                    round_participants.add(comment['agent_id'])
+            discussion_participation[f"round_{round_idx + 1}"] = len(round_participants)
+        
+        # Enhanced simulation summary
+        enhanced_summary = {
+            "metadata": {
+                "timestamp": timestamp,
+                "simulation_type": "multi_round_discussion",
+                "version": "1.0"
+            },
+            "simulation_settings": {
+                "num_agents": total_agents,
+                "discussion_group_size": self.discussion_group_size,
+                "max_election_rounds": self.max_election_rounds,
+                "supermajority_threshold": self.supermajority_threshold,
+                "parallel_processing_enabled": self.enable_parallel_processing
+            },
+            "results": {
+                "winner_cardinal_id": self.winner,
+                "winner_name": self.agents[self.winner].name if self.winner is not None else "N/A",
+                "total_election_rounds": total_rounds,
+                "winner_found": self.winner is not None,
+                "final_vote_threshold_met": self._check_final_threshold() if self.winner is not None else False
+            },
+            "participation_stats": {
+                "total_agents": total_agents,
+                "agents_with_embeddings": agents_with_embeddings,
+                "discussion_rounds_held": total_discussions,
+                "discussion_participation_by_round": discussion_participation,
+                "voting_rounds_held": total_rounds
+            },
+            "predefined_groups": {
+                "enabled": self.predefined_groups_enabled,
+                "active_group": self.active_group_name if self.predefined_groups_enabled else None,
+                "candidate_agent_ids": self.candidate_ids if self.predefined_groups_enabled else None
+            }
+        }
+        
+        summary_file = results_dir / "simulation_summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump(enhanced_summary, f, indent=4)
+        
+        logger.info(f"Enhanced simulation summary saved to {summary_file}")
+    
+    def _save_individual_voting_data(self, results_dir: Path) -> None:
+        """Save detailed individual voting data for each round."""
+        import json
+        
+        # Convert individual votes history to a more readable format
+        voting_data = {}
+        
+        for round_idx, round_votes in enumerate(self.individual_votes_history):
+            round_key = f"round_{round_idx + 1}"
+            voting_data[round_key] = {}
+            
+            for voter_agent_id, candidate_agent_id in round_votes.items():
+                # Get names and cardinal IDs for readability
+                voter_name = self.agents[voter_agent_id].name if voter_agent_id < len(self.agents) else f"Agent_{voter_agent_id}"
+                voter_cardinal_id = getattr(self.agents[voter_agent_id], 'cardinal_id', voter_agent_id) if voter_agent_id < len(self.agents) else voter_agent_id
+                
+                candidate_name = self.agents[candidate_agent_id].name if candidate_agent_id < len(self.agents) else f"Agent_{candidate_agent_id}"
+                candidate_cardinal_id = getattr(self.agents[candidate_agent_id], 'cardinal_id', candidate_agent_id) if candidate_agent_id < len(self.agents) else candidate_agent_id
+                
+                voting_data[round_key][str(voter_cardinal_id)] = {
+                    "candidate_cardinal_id": candidate_cardinal_id,
+                    "voter_name": voter_name,
+                    "candidate_name": candidate_name,
+                    "voter_agent_id": voter_agent_id,
+                    "candidate_agent_id": candidate_agent_id
+                }
+        
+        votes_file = results_dir / "individual_votes_by_round.json"
+        with open(votes_file, 'w') as f:
+            json.dump(voting_data, f, indent=4)
+        
+        logger.info(f"Individual voting data saved to {votes_file}")
+        
+        # Also save in flat CSV format for analysis
+        csv_data = []
+        for round_key, round_votes in voting_data.items():
+            round_num = int(round_key.split('_')[1])  # Extract number from "round_1"
+            
+            for cardinal_id, vote_info in round_votes.items():
+                csv_data.append({
+                    'round': round_num,
+                    'agent_id': vote_info['voter_agent_id'],
+                    'agent_name': vote_info['voter_name'],
+                    'cardinal_id': int(cardinal_id),
+                    'candidate_voted_for': vote_info['candidate_name'],
+                    'candidate_cardinal_id': vote_info['candidate_cardinal_id'],
+                    'candidate_agent_id': vote_info['candidate_agent_id']
+                })
+        
+        if csv_data:
+            import pandas as pd
+            df = pd.DataFrame(csv_data)
+            csv_file = results_dir / "voting_data.csv"
+            df.to_csv(csv_file, index=False)
+            logger.info(f"Flat voting data saved to {csv_file}")
+        else:
+            logger.warning("No voting data to save in CSV format")
+    
+    def _save_stance_embeddings(self, results_dir: Path) -> None:
+        """Save stance embeddings for all rounds in efficient format."""
+        import json
+        import numpy as np
+        
+        # Collect all embeddings and metadata
+        embedding_data = {}
+        metadata = {
+            "rounds": [],
+            "agents": [],
+            "embedding_dimension": None,
+            "model_used": None
+        }
+        
+        # Get embedding client info
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            stats = embedding_client.get_embedding_stats()
+            metadata["model_used"] = stats.get("model_name", "unknown")
+            metadata["embedding_dimension"] = stats.get("embedding_dimension", None)
+        except Exception as e:
+            logger.warning(f"Could not get embedding client stats: {e}")
+            metadata["model_used"] = "unknown"
+            metadata["embedding_dimension"] = None
+        
+        # Collect agent metadata
+        for agent in self.agents:
+            agent_info = {
+                "agent_id": agent.agent_id,
+                "name": agent.name,
+                "cardinal_id": getattr(agent, 'cardinal_id', agent.agent_id)
+            }
+            metadata["agents"].append(agent_info)
+        
+        # Collect embeddings by round
+        all_rounds = set()
+        for agent in self.agents:
+            if hasattr(agent, 'embedding_history') and agent.embedding_history:
+                all_rounds.update(agent.embedding_history.keys())
+        
+        all_rounds = sorted(list(all_rounds), key=lambda x: (x == "initial", x))  # Sort with "initial" first
+        metadata["rounds"] = all_rounds
+        
+        for round_key in all_rounds:
+            round_embeddings = []
+            for agent in self.agents:
+                if (hasattr(agent, 'embedding_history') and 
+                    agent.embedding_history and 
+                    round_key in agent.embedding_history):
+                    round_embeddings.append(agent.embedding_history[round_key])
+                else:
+                    # Fill with zeros if agent has no embedding for this round
+                    if metadata["embedding_dimension"]:
+                        round_embeddings.append(np.zeros(metadata["embedding_dimension"]))
+                    else:
+                        round_embeddings.append(None)
+            
+            if round_embeddings and round_embeddings[0] is not None:
+                embedding_data[round_key] = np.array(round_embeddings)
+        
+        # Save embeddings as compressed numpy file
+        if embedding_data:
+            embeddings_file = results_dir / "stance_embeddings_by_round.npz"
+            np.savez_compressed(embeddings_file, **embedding_data)
+            logger.info(f"Stance embeddings saved to {embeddings_file}")
+            
+            # Also save in CSV format for analysis
+            csv_data = []
+            for round_key, round_embeddings in embedding_data.items():
+                for agent_idx, embedding in enumerate(round_embeddings):
+                    agent_info = metadata["agents"][agent_idx]
+                    row = {
+                        'round': round_key,
+                        'agent_id': agent_info['agent_id'],
+                        'agent_name': agent_info['name'],
+                        'cardinal_id': agent_info['cardinal_id']
+                    }
+                    # Add embedding dimensions as separate columns
+                    for dim_idx, value in enumerate(embedding):
+                        row[f'embedding_{dim_idx}'] = value
+                    csv_data.append(row)
+            
+            if csv_data:
+                import pandas as pd
+                df = pd.DataFrame(csv_data)
+                csv_file = results_dir / "stance_embeddings.csv"
+                df.to_csv(csv_file, index=False)
+                logger.info(f"Stance embeddings CSV saved to {csv_file}")
+        else:
+            logger.warning("No embedding data found to save")
+        
+        # Save metadata as JSON
+        metadata_file = results_dir / "stance_embeddings_metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=4)
+        
+        logger.info(f"Embedding metadata saved to {metadata_file}")
+    
+    def _save_final_round_votes(self, results_dir: Path) -> None:
+        """Save final round voting results in CSV format."""
+        import pandas as pd
+        
+        if not self.individual_votes_history:
+            logger.warning("No voting history available for final round votes")
+            return
+        
+        # Get the final round votes
+        final_round_votes = self.individual_votes_history[-1]
+        final_round_number = len(self.individual_votes_history)
+        
+        # Create DataFrame
+        vote_records = []
+        for voter_agent_id, candidate_agent_id in final_round_votes.items():
+            voter_name = self.agents[voter_agent_id].name if voter_agent_id < len(self.agents) else f"Agent_{voter_agent_id}"
+            voter_cardinal_id = getattr(self.agents[voter_agent_id], 'cardinal_id', voter_agent_id) if voter_agent_id < len(self.agents) else voter_agent_id
+            
+            candidate_name = self.agents[candidate_agent_id].name if candidate_agent_id < len(self.agents) else f"Agent_{candidate_agent_id}"
+            candidate_cardinal_id = getattr(self.agents[candidate_agent_id], 'cardinal_id', candidate_agent_id) if candidate_agent_id < len(self.agents) else candidate_agent_id
+            
+            vote_records.append({
+                'voter_name': voter_name,
+                'voter_cardinal_id': voter_cardinal_id,
+                'candidate_name': candidate_name,
+                'candidate_cardinal_id': candidate_cardinal_id,
+                'round_number': final_round_number
+            })
+        
+        if vote_records:
+            df = pd.DataFrame(vote_records)
+            csv_file = results_dir / "final_round_votes.csv"
+            df.to_csv(csv_file, index=False)
+            logger.info(f"Final round votes saved to {csv_file}")
+        else:
+            logger.warning("No final round votes to save")
+    
+    def _check_final_threshold(self) -> bool:
+        """Check if the winner met the required threshold in the final round."""
+        if not self.votingHistory or self.winner is None:
+            return False
+        
+        final_votes = self.votingHistory[-1]
+        winner_votes = final_votes.get(self.winner, 0)
+        required_votes = self._calculate_required_majority()
+        
+        return winner_votes >= required_votes
+    
+    def _calculate_required_majority(self) -> int:
+        """Calculate the required majority based on current settings."""
+        total_voting_agents = len(self.agents)
+        return int(np.ceil(total_voting_agents * self.supermajority_threshold))

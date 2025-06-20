@@ -236,7 +236,7 @@ class PredefinedGroup(BaseModel):
     elector_ids: List[int]
     description: str
     ideology_balance: IdeologyBalance
-    override_settings: OverrideSettings
+    override_settings: Optional[OverrideSettings] = None
 
 class PredefinedGroupsConfig(BaseModel):
     """Configuration for all predefined groups."""

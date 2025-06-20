@@ -15,7 +15,7 @@ simulation:
   temperature: 0.7                    # Range: 0.0 (deterministic) - 2.0 (highly creative/random)
   
   # Discussion settings
-  discussion_group_size: 3            # Number of agents per discussion group
+  discussion_group_size: 5            # Number of agents per discussion group
   discussion_length:
     min_words: 50                     # Minimum word count for discussions
     max_words: 100                    # Maximum word count for discussions
@@ -39,7 +39,6 @@ models:
   llm:
     backend: remote                   # Options: 'remote' | 'local'
     model_name: meta-llama/llama-3.1-8b-instruct
-    temperature: 0.7                  # Inherits from simulation.temperature if not overridden
     max_tokens: 500
     
     # Tool calling configuration

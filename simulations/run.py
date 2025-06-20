@@ -263,37 +263,55 @@ def main():
                 f"No winner found after {max_election_rounds} election rounds. Simulation ended without papal election."
             )
 
-        # Save results
-        results_data = {
-            "timestamp": timestamp,
-            "winner_cardinal_id": env.winner,
-            "winner_name": env.agents[env.winner].name if env.winner is not None else "N/A",
-            "total_election_rounds": election_round,
-            "max_election_rounds_config": max_election_rounds,
-            "discussion_group_size_config": discussion_group_size,
-            # Add other relevant results here
-        }
-        results_file_path = results_dir / "simulation_summary.json"
+        # Save comprehensive simulation results
         try:
-            with open(results_file_path, "w") as f:
-                import json
-
-                json.dump(results_data, f, indent=4)
-            logger.info(f"Simulation summary saved to {results_file_path}")
+            env.save_simulation_results(base_output_dir, timestamp)
+            logger.info("All simulation results saved successfully")
         except Exception as e:
-            logger.error(f"Error saving simulation summary: {e}")
+            logger.error(f"Error saving comprehensive simulation results: {e}")
+            # Fallback to basic results saving
+            try:
+                results_data = {
+                    "timestamp": timestamp,
+                    "winner_cardinal_id": env.winner,
+                    "winner_name": env.agents[env.winner].name if env.winner is not None else "N/A",
+                    "total_election_rounds": election_round,
+                    "max_election_rounds_config": max_election_rounds,
+                    "discussion_group_size_config": discussion_group_size,
+                }
+                results_file_path = results_dir / "simulation_summary.json"
+                with open(results_file_path, "w") as f:
+                    import json
+                    json.dump(results_data, f, indent=4)
+                logger.info(f"Basic simulation summary saved to {results_file_path}")
+            except Exception as fallback_error:
+                logger.error(f"Error saving even basic simulation summary: {fallback_error}")
 
-        # Generate stance progression visualization using CardinalVisualizer
-        # First ensure all embeddings are updated
-        # env.update_all_embeddings_after_simulation() # Commenting out as this method does not exist
-        
-        # Log embedding evolution summary
-        # evolution_summary = env.get_embedding_evolution_summary() # Commenting out as this method does not exist
-        
-        #visualizer = CardinalVisualizer(
-        #    config_manager, viz_dir=str(viz_dir)
-        #)  # Pass config_manager
-        #visualizer.generate_stance_visualization_from_env(env)
+        # Generate enhanced visualizations
+        try:
+            from conclave.visualization.cardinal_visualizer import CardinalVisualizer
+            visualizer = CardinalVisualizer(str(viz_dir))
+            visualizer.generate_stance_visualization_from_env(env)
+            logger.info("Stance progression visualization generated successfully")
+        except Exception as e:
+            logger.warning(f"Failed to generate visualization: {e}")
+
+        # Generate comprehensive visualization analysis
+        try:
+            import subprocess
+            results_dir = base_output_dir / "results"
+            if results_dir.exists():
+                cmd = [
+                    "python", "scripts/voting_analysis.py", 
+                    str(results_dir), 
+                    "--reduction-methods", "pca", "tsne", "umap"
+                ]
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                logger.info("Comprehensive visualization analysis generated successfully")
+            else:
+                logger.warning("Results directory not found for visualization")
+        except Exception as e:
+            logger.warning(f"Failed to generate visualization analysis: {e}")
 
     finally:
         # Restore the original working directory

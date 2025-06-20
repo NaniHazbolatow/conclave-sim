@@ -19,11 +19,6 @@ predefined_groups:
       progressive: 1
       conservative: 1
       moderate: 3
-    override_settings:
-      num_cardinals: 5
-      discussion_group_size: 5
-      max_election_rounds: 1
-      supermajority_threshold: 0.667
   medium:
     total_cardinals: 15
     cardinal_ids:
@@ -64,11 +59,6 @@ predefined_groups:
       progressive: 5
       conservative: 5
       moderate: 5
-    override_settings:
-      num_cardinals: 15
-      discussion_group_size: 5
-      max_election_rounds: 3
-      supermajority_threshold: 0.667
   large:
     total_cardinals: 25
     cardinal_ids:
@@ -129,11 +119,6 @@ predefined_groups:
       progressive: 8
       conservative: 8
       moderate: 9
-    override_settings:
-      num_cardinals: 25
-      discussion_group_size: 5
-      max_election_rounds: 5
-      supermajority_threshold: 0.667
   xlarge:
     total_cardinals: 50
     cardinal_ids:
@@ -244,11 +229,6 @@ predefined_groups:
       progressive: 16
       conservative: 16
       moderate: 18
-    override_settings:
-      num_cardinals: 50
-      discussion_group_size: 5
-      max_election_rounds: 10
-      supermajority_threshold: 0.667
   full:
     total_cardinals: 108
     cardinal_ids:
@@ -475,8 +455,3 @@ predefined_groups:
       progressive: 48
       conservative: 40
       moderate: 20
-    override_settings:
-      num_cardinals: 108
-      discussion_group_size: 5
-      max_election_rounds: 21
-      supermajority_threshold: 0.667
