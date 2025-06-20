@@ -1,21 +1,28 @@
 # Custom functions
+<<<<<<<< HEAD:conclave/network/archive/network.py
 from network_utils import add_networks, load_node_attributes, pope_candidate
 import os
 import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+========
+from network_utils import add_networks, load_node_attributes, present_in_conclave
+>>>>>>>> origin/add-network-choice:conclave/network/archive/generate_bocconi_network.py
 
 # Packages
 import polars as pl
 import pandas as pd
 import networkx as nx
+import numpy as np  
+import pickle
 from collections import defaultdict
 from itertools import combinations
 import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from matplotlib.colors import Normalize
 from matplotlib.patches import Patch
+import random
 
 # Initialize episcopal consecration matrix from Soda et al. (2025) 
 # Episcopal consecration gives us insight into who ordained who
@@ -57,71 +64,21 @@ G_multiplex = load_node_attributes(G_multiplex, 'node_info.xlsx')
 centrality = nx.eigenvector_centrality(G_multiplex, weight='weight')
 nx.set_node_attributes(G_multiplex, centrality, 'EigenvectorCentrality')
 
-#####################
-### Utility Model ###
-#####################
-def compute_utility(G, source, beta=(1.0, 1.0, 1.0, 1.0)):
-    """
-    Computes utility from source to all other nodes in G using Dijkstra-based connection strength.
+# Write Graph
+with open('bocconi_graph.gpickle', 'wb') as f:
+    pickle.dump(G_multiplex, f, pickle.HIGHEST_PROTOCOL)
 
-    Parameters:
-    - G: NetworkX graph with 'IdeologyScore' and 'EigenvectorCentrality' node attributes
-    - source: source node
-    - beta: (w1, w2, w3, w4) = (connection strength, ideological proximity, influenceability, interaction)
-
-    Returns:
-    - Dictionary mapping target node to utility score
-    """
-    utilities = {}
-    w1, w2, w3, w4 = beta
-    x_i = G.nodes[source].get('IdeologyScore', 0)
-
-    # 1. Compute Dijkstra costs with cost = 1 / weight
-    cost_graph = G.copy()
-    for u, v, data in cost_graph.edges(data=True):
-        weight = data.get('weight', 1.0)
-        data['cost'] = 1.0 / max(weight, 1e-5)  # avoid div by zero
-
-    # 2. Compute shortest path lengths
-    shortest_paths = nx.single_source_dijkstra_path_length(cost_graph, source, weight='cost')
-
-    for target in G.nodes:
-        if target == source:
-            continue
-
-        # 3. Connection strength = inverse of shortest path length
-        if target in shortest_paths:
-            connection_strength = 1.0 / (shortest_paths[target] + 1e-5)
-        else:
-            connection_strength = 0.0
-
-        # 4. Ideological proximity
-        x_j = G.nodes[target].get('IdeologyScore', 0)
-        proximity = -abs(x_i - x_j)
-
-        # 5. Influenceability = inverse of EigenvectorCentrality
-        centrality_j = G.nodes[target].get('EigenvectorCentrality', 1e-5)
-        influenceability = 1.0 / centrality_j if centrality_j > 0 else 0
-
-        # 6. Interaction term
-        interaction = connection_strength * proximity
-
-        # 7. Linear utility with interaction
-        utility = (
-            w1 * connection_strength +
-            w2 * proximity +
-            w3 * influenceability +
-            w4 * interaction
-        )
-
-        utilities[target] = utility
-
-    return utilities
+# Read graph
+with open('bocconi_graph.gpickle', 'rb') as f:
+    G_multiplex = pickle.load(f)
 
 
+<<<<<<<< HEAD:conclave/network/archive/network.py
 utilities = compute_utility(G_multiplex, source='Prevost')
 top_targets = sorted(utilities.items(), key=lambda x: x[1], reverse=True)[:10]
 logging.info(f"Top 10 targets by utility: {top_targets}")
+========
+>>>>>>>> origin/add-network-choice:conclave/network/archive/generate_bocconi_network.py
 
 #######################################
 ### Appendix: Extra Plot for Report ###
@@ -133,7 +90,7 @@ from matplotlib import colormaps
 
 # Filter graph to only include papal candidates
 G_electors = G_multiplex.subgraph(
-    [n for n, d in G_multiplex.nodes(data=True) if pope_candidate(d)]
+    [n for n, d in G_multiplex.nodes(data=True) if present_in_conclave(d)]
 ).copy()
 
 # Define political lean → numerical score
@@ -261,4 +218,5 @@ logging.info(f"Number of liberals in the college: {liberals}")
 plt.title("Cardinal Network — Grouped by Political Lean", fontsize=18)
 plt.axis('off')
 plt.tight_layout()
-plt.savefig("network/cardinal_network.png", dpi=300)
+plt.savefig("cardinal_network.png", dpi=300)
+

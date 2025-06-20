@@ -38,8 +38,8 @@ def load_node_attributes(G, excel_file, node_col='Surname'):
     nx.set_node_attributes(G, node_attrs)
     return G
 
-def pope_candidate(data):
-    """Determine whether a cardinal is a viable candidate for the papacy."""
+def present_in_conclave(data):
+    """Determine whether a cardinal is present in conclave."""
     lean = str(data.get('Lean', '')).strip().lower()
     age = data.get('Age', 0)
     return lean != 'non-voting' or age < 80
