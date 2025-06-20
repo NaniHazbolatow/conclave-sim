@@ -12,6 +12,7 @@ from conclave.agents.base import Agent # For type hinting, removed AgentSettings
 from conclave.prompting.prompt_loader import PromptLoader # Corrected import to use prompting
 from conclave.prompting.unified_generator import UnifiedPromptVariableGenerator
 from conclave.config import get_config_manager # Use centralized config management
+from config.scripts import get_config  # Import new config adapter
 from conclave.llm import get_llm_client, SimplifiedToolCaller # Use new simplified tool calling
 from conclave.network.network_manager import NetworkManager # Add network manager import
 from config.scripts.models import RefactoredConfig
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 discussion_logger = logging.getLogger('conclave.discussions') 
 
 class ConclaveEnv:
-    def __init__(self, viz_dir: Optional[str] = None): # Add viz_dir and allow num_agents to be set by config
+    def __init__(self, viz_dir: Optional[str] = None): # Simplified constructor
         # print("ConclaveEnv.__init__ STARTED") # DEBUG PRINT
         self.agents: List[Agent] = [] # Type hint for self.agents
         self.viz_dir = viz_dir # Store viz_dir
@@ -47,7 +48,7 @@ class ConclaveEnv:
 
         # Initialize config manager and load configuration
         # print("ConclaveEnv.__init__: Initializing ConfigManager...") # DEBUG PRINT
-        self.config_manager = get_config_manager()
+        self.config_manager = get_config()  # Use global config adapter
         self.app_config: RefactoredConfig = self.config_manager.config # Access config directly
         # print("ConclaveEnv.__init__: ConfigManager initialized.") # DEBUG PRINT
 
@@ -80,7 +81,7 @@ class ConclaveEnv:
 
         # Extract relevant config sections for easier access
         # print("ConclaveEnv.__init__: Extracting config sections...") # DEBUG PRINT
-        self.agent_config = self.app_config.agent
+        self.agent_config = self.app_config.models  # Updated to use 'models' instead of 'agent'
         self.simulation_config = self.app_config.simulation
         self.output_config = self.app_config.output
 
@@ -90,7 +91,7 @@ class ConclaveEnv:
         # logger.debug(f"ConclaveEnv initialized") # Simpler log
         logger.debug(f"ConclaveEnv initialized with app_config: {self.app_config.model_dump_json(indent=2)}") # More detailed log
 
-        self.num_agents = self.simulation_config.num_cardinals # Override num_agents from constructor
+        self.num_agents = self.config_manager.get_num_cardinals()  # Get from config manager instead
         self.discussion_group_size = self.simulation_config.discussion_group_size
         self.max_election_rounds = self.simulation_config.max_election_rounds
         self.min_discussion_words = self.simulation_config.discussion_length.min_words
@@ -105,26 +106,50 @@ class ConclaveEnv:
         # Initialize BreakoutScheduler (will be set up when agents are created)
         self.breakout_scheduler = None
 
-        # Testing groups configuration (if enabled)
-        if self.app_config.testing_groups and self.app_config.testing_groups.enabled:
-            self.testing_groups_enabled = True # Explicitly set
-            self.active_testing_group_name = self.app_config.testing_groups.active_group
-            # Directly access the active group's settings
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-
-            # Override simulation parameters if a testing group is active
-            self.num_agents = active_group_details.override_settings.num_cardinals
-            self.discussion_group_size = active_group_details.override_settings.discussion_group_size
-            self.max_election_rounds = active_group_details.override_settings.max_election_rounds
-            self.supermajority_threshold = active_group_details.override_settings.supermajority_threshold
-            self.enable_parallel_processing = active_group_details.override_settings.enable_parallel_processing
-            logger.info(f"RUNNING WITH TESTING GROUP: {self.active_testing_group_name}")
-            logger.info(f"  Num Cardinals: {self.num_agents}")
-            logger.info(f"  Discussion Group Size: {self.discussion_group_size}")
-            logger.info(f"  Max Election Rounds: {self.max_election_rounds}")
-            logger.info(f"  Supermajority Threshold: {self.supermajority_threshold}")
+        # Predefined groups configuration (if enabled)
+        if self.app_config.groups and self.app_config.groups.active:
+            self.predefined_groups_enabled = True
+            self.active_group_name = self.app_config.groups.active
+            
+            # Load the actual group data from groups.yaml using the active group from current config
+            try:
+                # Load groups data directly from the original project location
+                # (groups.yaml is not copied to output directory)
+                project_root = Path(__file__).parent.parent.parent
+                groups_file_path = project_root / "config" / "groups.yaml"
+                
+                if groups_file_path.exists():
+                    with open(groups_file_path, 'r') as f:
+                        import yaml
+                        groups_data = yaml.safe_load(f)
+                    
+                    active_group_config = groups_data["predefined_groups"].get(self.active_group_name)
+                else:
+                    raise FileNotFoundError(f"Groups file not found: {groups_file_path}")
+                
+                if active_group_config:
+                    # Override simulation parameters if a predefined group is active
+                    self.num_agents = active_group_config['total_cardinals']
+                    # Apply simulation settings overrides if they exist
+                    if 'override_settings' in active_group_config:
+                        override_settings = active_group_config['override_settings']
+                        self.discussion_group_size = override_settings.get('discussion_group_size', self.discussion_group_size)
+                        self.max_election_rounds = override_settings.get('max_election_rounds', self.max_election_rounds) 
+                        self.supermajority_threshold = override_settings.get('supermajority_threshold', self.supermajority_threshold)
+                    
+                    logger.info(f"RUNNING WITH PREDEFINED GROUP: {self.active_group_name}")
+                    logger.info(f"  Num Cardinals: {self.num_agents}")
+                    logger.info(f"  Discussion Group Size: {self.discussion_group_size}")
+                    logger.info(f"  Max Election Rounds: {self.max_election_rounds}")
+                    logger.info(f"  Supermajority Threshold: {self.supermajority_threshold}")
+                else:
+                    logger.error(f"Active group '{self.active_group_name}' not found in predefined groups")
+                    self.predefined_groups_enabled = False
+            except FileNotFoundError:
+                logger.error(f"Groups file not found, disabling predefined groups")
+                self.predefined_groups_enabled = False
         else:
-            self.testing_groups_enabled = False
+            self.predefined_groups_enabled = False
         # print("ConclaveEnv.__init__: Testing groups configuration processed.") # DEBUG PRINT
 
         # Initialize agents
@@ -154,27 +179,41 @@ class ConclaveEnv:
         
         loaded_agents = [] # Temporary list to hold loaded agents
 
-        if self.testing_groups_enabled:
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-            cardinal_ids_for_group = active_group_details.cardinal_ids
-            # print(f"ConclaveEnv._initialize_agents: Testing groups enabled. Group: {self.active_testing_group_name}, Cardinal IDs: {cardinal_ids_for_group}") # DEBUG PRINT
-            logger.info(f"Loading testing group '{self.active_testing_group_name}' with {len(cardinal_ids_for_group)} cardinals: {cardinal_ids_for_group}")
-            
-            # Filter dataframe to only include cardinals in the testing group
-            master_df_filtered = master_df[master_df['Cardinal_ID'].isin(cardinal_ids_for_group)]
-            
-            if len(master_df_filtered) != len(cardinal_ids_for_group):
-                loaded_ids_from_csv = set(master_df_filtered['Cardinal_ID'].tolist())
-                missing_ids = set(cardinal_ids_for_group) - loaded_ids_from_csv
-                if missing_ids:
-                    logger.warning(f"Some cardinal IDs for testing group '{self.active_testing_group_name}' not found in CSV: {missing_ids}")
-            master_df_to_load = master_df_filtered
+        if self.predefined_groups_enabled:
+            # Get active group config using the current config object (handles CLI overrides)
+            try:
+                # Always load groups.yaml from the project root, not from output directory
+                project_root = Path(__file__).parent.parent.parent
+                groups_file_path = project_root / "config" / "groups.yaml"
+                
+                with open(groups_file_path, 'r') as f:
+                    import yaml
+                    groups_data = yaml.safe_load(f)
+                    
+                active_group_config = groups_data["predefined_groups"].get(self.active_group_name)
+                
+                if active_group_config:
+                    cardinal_ids_for_group = active_group_config['cardinal_ids']
+                    logger.info(f"Loading predefined group '{self.active_group_name}' with {len(cardinal_ids_for_group)} cardinals: {cardinal_ids_for_group}")
+                    
+                    # Filter dataframe to only include cardinals in the predefined group
+                    master_df_filtered = master_df[master_df['Cardinal_ID'].isin(cardinal_ids_for_group)]
+                    
+                    if len(master_df_filtered) != len(cardinal_ids_for_group):
+                        loaded_ids_from_csv = set(master_df_filtered['Cardinal_ID'].tolist())
+                        missing_ids = set(cardinal_ids_for_group) - loaded_ids_from_csv
+                        if missing_ids:
+                            logger.warning(f"Some cardinal IDs for predefined group '{self.active_group_name}' not found in CSV: {missing_ids}")
+                    master_df_to_load = master_df_filtered
+                else:
+                    logger.error(f"Active group '{self.active_group_name}' not found in groups data")
+                    master_df_to_load = master_df.head(self.num_agents)  # Fallback
+            except FileNotFoundError:
+                logger.error(f"Groups file not found, falling back to default agent loading")
+                master_df_to_load = master_df.head(self.num_agents)  # Fallback
         else:
-            # In normal mode, use num_agents from simulation_config (which might have been overridden by testing group if it was active initially but then disabled, so re-check)
-            num_to_load = self.simulation_config.num_cardinals 
-            if self.app_config.testing_groups and self.app_config.testing_groups.enabled: # If testing groups are somehow re-enabled, defer to that
-                active_group_details = getattr(self.app_config.testing_groups, self.app_config.testing_groups.active_group)
-                num_to_load = active_group_details.override_settings.num_cardinals
+            # In normal mode, use num_agents from config manager
+            num_to_load = self.config_manager.get_num_cardinals() 
 
             if num_to_load and num_to_load < len(master_df):
                 master_df_to_load = master_df.head(num_to_load)
@@ -194,7 +233,7 @@ class ConclaveEnv:
             # available_tools = list(self.prompt_loader.prompts_config.tool_definitions.values()) if self.prompt_loader.prompts_config else [] # Not passed to Agent constructor
 
             agent = Agent(
-                agent_id=list_index,  # Use list index as agent_id for consistent indexing
+                agent_id=list_index,  # Use sequential index for internal agent_id
                 name=row['Name'],
                 conclave_env=self, # Pass the environment instance
                 personality=row.get('Internal_Persona', ''), # Assuming Internal_Persona maps to personality
@@ -216,33 +255,52 @@ class ConclaveEnv:
         self.num_agents = len(loaded_agents)
         # print(f"ConclaveEnv._initialize_agents: self.num_agents updated to {self.num_agents}") # DEBUG PRINT
 
-        # Update candidate_ids to use list indices if testing groups are enabled
-        if self.testing_groups_enabled:
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-            original_candidate_ids_for_group = active_group_details.candidate_ids
-            # print(f"ConclaveEnv._initialize_agents: Mapping candidate IDs for testing group. Original: {original_candidate_ids_for_group}") # DEBUG PRINT
-            
-            # Create a mapping from Cardinal_ID to the list_index of the loaded agents
-            # Corrected to use agent.cardinal_id which is now set directly
-            cardinal_id_to_index_map = {agent.cardinal_id: agent.agent_id for agent in loaded_agents}
-            
-            self.candidate_ids = [cardinal_id_to_index_map[cid] for cid in original_candidate_ids_for_group if cid in cardinal_id_to_index_map]
-            
-            if len(self.candidate_ids) != len(original_candidate_ids_for_group):
-                logger.warning(
-                    f"Mismatch in candidate mapping for testing group '{self.active_testing_group_name}'. "
-                    f"Original: {original_candidate_ids_for_group}, Mapped: {self.candidate_ids}. "
-                    f"This might happen if some candidate Cardinal_IDs were not found or loaded."
-                )
-            logger.info(f"Mapped candidate Cardinal_IDs {original_candidate_ids_for_group} to agent_ids {self.candidate_ids} for testing group '{self.active_testing_group_name}'.")
+        # Update candidate_ids to map Cardinal_IDs to agent_ids if predefined groups are enabled
+        if self.predefined_groups_enabled:
+            # Get active group config using the current config object (handles CLI overrides)
+            try:
+                # Always load groups.yaml from the project root, not from output directory
+                project_root = Path(__file__).parent.parent.parent
+                groups_file_path = project_root / "config" / "groups.yaml"
+                
+                with open(groups_file_path, 'r') as f:
+                    import yaml
+                    groups_data = yaml.safe_load(f)
+                    
+                active_group_config = groups_data["predefined_groups"].get(self.active_group_name)
+                
+                if active_group_config:
+                    original_candidate_ids_for_group = active_group_config['candidate_ids']
+                    
+                    # Create a mapping from Cardinal_ID to agent_id (list_index)
+                    cardinal_id_to_agent_id_map = {int(row['Cardinal_ID']): list_idx for list_idx, (_, row) in enumerate(master_df_to_load.iterrows())}
+                    
+                    self.candidate_ids = [cardinal_id_to_agent_id_map[cid] for cid in original_candidate_ids_for_group if cid in cardinal_id_to_agent_id_map]
+                    
+                    if len(self.candidate_ids) != len(original_candidate_ids_for_group):
+                        missing_candidates = set(original_candidate_ids_for_group) - set(cardinal_id_to_agent_id_map.keys())
+                        logger.warning(
+                            f"Some candidate Cardinal_IDs for predefined group '{self.active_group_name}' were not loaded: {missing_candidates}. "
+                            f"Available candidates (agent_ids): {self.candidate_ids}"
+                        )
+                    logger.info(f"Mapped candidate Cardinal_IDs {original_candidate_ids_for_group} to agent_ids {self.candidate_ids} for predefined group '{self.active_group_name}'.")
+                else:
+                    # Fallback if group config not found
+                    num_candidates = min(2, len(loaded_agents))
+                    self.candidate_ids = list(range(num_candidates))
+                    logger.warning(f"Could not load candidate mapping for group '{self.active_group_name}', using default: {self.candidate_ids}")
+            except FileNotFoundError:
+                # Fallback if groups file not found
+                num_candidates = min(2, len(loaded_agents))
+                self.candidate_ids = list(range(num_candidates))
+                logger.warning(f"Groups file not found, using default candidate mapping: {self.candidate_ids}")
         else:
             self.candidate_ids = list(range(self.num_agents)) # All loaded agents are potential candidates
         # print(f"ConclaveEnv._initialize_agents: Candidate IDs set: {self.candidate_ids}") # DEBUG PRINT
 
         logger.info(f"Successfully loaded {self.num_agents} agents.")
-        if self.testing_groups_enabled:
-            logger.info(f"Testing group \'{self.active_testing_group_name}\' active. Candidate agent_ids: {self.candidate_ids}")
-            # logger.info(f"Testing group setup:\\\\n{self.get_candidates_description()}") # get_candidates_description needs to be adapted or removed
+        if self.predefined_groups_enabled:
+            logger.info(f"Predefined group '{self.active_group_name}' active. Candidate agent_ids: {self.candidate_ids}")
         # print("ConclaveEnv._initialize_agents FINISHED") # DEBUG PRINT
         return loaded_agents
 
@@ -250,12 +308,12 @@ class ConclaveEnv:
         """Freeze the agent count to match the loaded roster. Call after loading all agents."""
         self.num_agents = len(self.agents)
 
-    # Testing groups candidate/elector helper methods
+    # Predefined groups candidate/elector helper methods
     def is_candidate(self, agent_id: int) -> bool:
-        """Check if an agent is a candidate in testing groups mode."""
-        if not self.testing_groups_enabled:
+        """Check if an agent is a candidate in predefined groups mode."""
+        if not self.predefined_groups_enabled:
             return True  # In normal mode, all agents can be candidates
-        return agent_id in self.candidate_ids # self.candidate_ids stores agent_id (index)
+        return agent_id in self.candidate_ids
 
     def get_candidates_list(self) -> List[int]:
         """Get list of candidate agent IDs."""
@@ -593,9 +651,9 @@ class ConclaveEnv:
             logger.warning(f"Agents {sorted(unassigned_agent_ids)} not assigned to any group by BreakoutScheduler")
             # Create additional groups for unassigned agents
             unassigned_list = list(unassigned_agent_ids)
-            room_size = 5  # Match the BreakoutScheduler room_size
-            for i in range(0, len(unassigned_list), room_size):
-                fallback_group = unassigned_list[i:i + room_size]
+            # Use discussion_group_size for consistency
+            for i in range(0, len(unassigned_list), self.discussion_group_size):
+                fallback_group = unassigned_list[i:i + self.discussion_group_size]
                 agent_groups.append(fallback_group)
                 logger.info(f"Created fallback group: {fallback_group}")
         
@@ -657,8 +715,8 @@ class ConclaveEnv:
         
         self.breakout_scheduler = BreakoutScheduler(
             G_simulation, 
-            room_size=grouping_config.room_size,
-            rationality=grouping_config.rationality,
+            room_size=self.discussion_group_size,  # Use discussion_group_size consistently
+            rationality=self.app_config.simulation.rationality,  # Use simulation rationality
             penalty_weight=grouping_config.penalty_weight,
             weights=weights
         )

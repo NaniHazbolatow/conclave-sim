@@ -2,6 +2,7 @@ import sys
 import os
 from pathlib import Path
 import warnings
+import argparse
 
 # Suppress urllib3 LibreSSL warning on macOS
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL 1.1.1+")
@@ -11,6 +12,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from config.scripts import get_config  # Updated to use refactored config system
+from config.scripts.models import RefactoredConfig, GroupsConfig, SimulationConfig
 from conclave.environments.conclave_env import ConclaveEnv
 from conclave.agents.base import Agent
 from conclave.visualization.cardinal_visualizer import CardinalVisualizer
@@ -23,10 +25,123 @@ import shutil
 logger = logging.getLogger("conclave.system")  # Changed from __name__
 
 
+def parse_arguments():
+    """Parse command line arguments for main simulation settings."""
+    parser = argparse.ArgumentParser(
+        description='Run Conclave Simulation',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run with medium group and 10 rounds
+  python run.py --group medium --max-rounds 10
+  
+  # Run with custom rationality and temperature
+  python run.py --rationality 0.9 --temperature 0.5
+  
+  # Run with parallel processing disabled
+  python run.py --no-parallel
+  
+  # Run with custom discussion group size
+  python run.py --discussion-size 5
+        """
+    )
+    
+    # Core simulation parameters
+    parser.add_argument('--group', type=str, choices=['small', 'medium', 'large', 'xlarge', 'full'],
+                       help='Active predefined group (overrides config.yaml groups.active)')
+    parser.add_argument('--max-rounds', type=int, metavar='N',
+                       help='Maximum simulation rounds (Range: 1-50)')
+    parser.add_argument('--parallel', action='store_true', default=None,
+                       help='Enable parallel processing')
+    parser.add_argument('--no-parallel', action='store_true',
+                       help='Disable parallel processing')
+    
+    # Agent behavior parameters  
+    parser.add_argument('--rationality', type=float, metavar='R',
+                       help='Agent rationality (Range: 0.0=random to 1.0=fully rational)')
+    parser.add_argument('--temperature', type=float, metavar='T', 
+                       help='LLM temperature (Range: 0.0=deterministic to 2.0=creative)')
+    parser.add_argument('--discussion-size', type=int, metavar='N',
+                       help='Number of agents per discussion group')
+    
+    # Output control
+    parser.add_argument('--output-dir', type=str, metavar='DIR',
+                       help='Custom output directory (default: auto-generated timestamp)')
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       help='Logging level (overrides config.yaml)')
+    parser.add_argument('--no-viz', action='store_true',
+                       help='Disable visualization generation')
+    
+    return parser.parse_args()
+
+
+def apply_cli_overrides(config: RefactoredConfig, args: argparse.Namespace) -> RefactoredConfig:
+    """Apply command line argument overrides to configuration.
+    
+    Args:
+        config: Base configuration loaded from files
+        args: Parsed command line arguments
+        
+    Returns:
+        Updated configuration with CLI overrides applied
+    """
+    # Handle parallel/no-parallel flags
+    if args.no_parallel:
+        config.simulation.enable_parallel = False
+    elif args.parallel:
+        config.simulation.enable_parallel = True
+    
+    # Override simulation parameters
+    if args.max_rounds is not None:
+        if not 1 <= args.max_rounds <= 50:
+            raise ValueError("max_rounds must be between 1 and 50")
+        config.simulation.max_rounds = args.max_rounds
+    
+    if args.rationality is not None:
+        if not 0.0 <= args.rationality <= 1.0:
+            raise ValueError("rationality must be between 0.0 and 1.0")
+        config.simulation.rationality = args.rationality
+    
+    if args.temperature is not None:
+        if not 0.0 <= args.temperature <= 2.0:
+            raise ValueError("temperature must be between 0.0 and 2.0")
+        config.simulation.temperature = args.temperature
+        # Also update LLM temperature if not explicitly set differently
+        config.models.llm.temperature = args.temperature
+    
+    if args.discussion_size is not None:
+        if not 2 <= args.discussion_size <= 20:
+            raise ValueError("discussion_size must be between 2 and 20")
+        config.simulation.discussion_group_size = args.discussion_size
+    
+    # Override groups configuration
+    if args.group is not None:
+        if config.groups is None:
+            config.groups = GroupsConfig()
+        config.groups.active = args.group
+    
+    # Override output/logging parameters
+    if args.log_level is not None:
+        config.output.logging.log_level = args.log_level
+    
+    if args.no_viz:
+        config.output.visualization.auto_generate = False
+    
+    return config
+
+
 def main():
+    # Parse command line arguments
+    args = parse_arguments()
+    
     # print("discussion_round.py: main() started")  # DEBUG PRINT
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_output_dir = project_root / "simulations" / "outputs" / timestamp
+    
+    # Use custom output directory if specified
+    if args.output_dir:
+        base_output_dir = Path(args.output_dir)
+    else:
+        base_output_dir = project_root / "simulations" / "outputs" / timestamp
     # print(f"discussion_round.py: base_output_dir = {base_output_dir}")  # DEBUG PRINT
 
     logs_dir = base_output_dir / "logs"
@@ -47,18 +162,36 @@ def main():
 
         # Get config manager instance (it will find config.yaml in the new CWD)
         # print("discussion_round.py: Attempting to get config manager...")  # DEBUG PRINT
-        config_manager = get_config()  # Load refactored configuration via adapter
+        config_manager = get_config(str(project_root))  # Explicitly pass project root path
+        
+        # Apply CLI overrides to configuration
+        original_config = config_manager.config
+        try:
+            updated_config = apply_cli_overrides(original_config, args)
+            # Create new config manager with updated config
+            from config.scripts.adapter import ConfigAdapter
+            config_manager = ConfigAdapter(config_dir=str(project_root), config_object=updated_config)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         # print("discussion_round.py: Config manager obtained.")  # DEBUG PRINT
+        
+        # Copy configs to output directory (this saves the config WITH CLI overrides)
         config_manager.copy_configs_to_output_dir(base_output_dir)
         # print("discussion_round.py: Configs copied to output dir.")  # DEBUG PRINT
+        
+        # Create a new config manager that loads from the output directory
+        # This ensures the environment uses the exact same config as saved
+        output_config_manager = config_manager.create_config_manager_from_output_dir(base_output_dir)
+        output_config_manager.set_as_global_config()  # Set as global singleton
 
         # Setup logging using config adapter
         # print("discussion_round.py: Attempting to initialize logging...")  # DEBUG PRINT
-        config_manager.initialize_logging(dynamic_logs_dir=logs_dir)
+        output_config_manager.initialize_logging(dynamic_logs_dir=logs_dir)
         # print("discussion_round.py: Logging initialized.")  # DEBUG PRINT
 
         # Load configuration
-        config = config_manager  # Use the instance we already have
+        config = output_config_manager  # Use the output config manager
         num_cardinals = config.get_num_cardinals()
         discussion_group_size = config.get_discussion_group_size()  # New relevant config
         max_election_rounds = config.get_max_election_rounds()
@@ -69,8 +202,8 @@ def main():
             f"max_election_rounds={max_election_rounds}"
         )
 
-        # Create the environment
-        env = ConclaveEnv()  # Removed viz_dir argument
+        # Create the environment (now uses global config automatically)
+        env = ConclaveEnv()  # No need to pass config manager anymore
         # print("discussion_round.py: ConclaveEnv initialized.")  # DEBUG PRINT
 
         # Generate initial internal stances for all agents before starting
