@@ -26,73 +26,46 @@ logger = logging.getLogger(__name__)
 discussion_logger = logging.getLogger('conclave.discussions') 
 
 class ConclaveEnv:
-    def __init__(self, viz_dir: Optional[str] = None): # Simplified constructor
-        # print("ConclaveEnv.__init__ STARTED") # DEBUG PRINT
-        self.agents: List[Agent] = [] # Type hint for self.agents
-        self.viz_dir = viz_dir # Store viz_dir
-        self.votingRound = 0 # Initialize to 0. multi_round.py will set it to 1, 2, ... for each round.
+    def __init__(self, viz_dir: Optional[str] = None):
+        self.agents: List[Agent] = []
+        self.viz_dir = viz_dir
+        self.votingRound = 0
         self.votingHistory = []
         self.votingBuffer = {}
-        # Track individual votes: {voter_agent_id: candidate_id} for current round
         self.individual_votes_buffer = {}
-        # Track individual votes history: List of {voter_agent_id: candidate_id} for each round
         self.individual_votes_history = []
-        # Track which agents participated in which discussion rounds
         self.agent_discussion_participation = {}
-        # Track which agents voted in each round
         self.voting_participation = {}
         self.voting_lock = threading.Lock()
-        self.winner: Optional[int] = None # Winner will be an agent_id (int)
-        self.discussionHistory: List[List[Dict]] = [] # List of rounds, each round is a list of comment dicts
+        self.winner: Optional[int] = None
+        self.discussionHistory: List[List[Dict]] = []
         self.discussionRound = 0
-        self.agent_discussion_participation: Dict[int, List[int]] = {} # agent_id -> list of discussion_round_numbers
+        self.agent_discussion_participation: Dict[int, List[int]] = {}
 
-        # Initialize config manager and load configuration
-        # print("ConclaveEnv.__init__: Initializing ConfigManager...") # DEBUG PRINT
-        self.config_manager = get_config()  # Use global config adapter
-        self.app_config: RefactoredConfig = self.config_manager.config # Access config directly
-        # print("ConclaveEnv.__init__: ConfigManager initialized.") # DEBUG PRINT
+        self.config_manager = get_config()
+        self.app_config: RefactoredConfig = self.config_manager.config
 
-        # Load prompts and tools
-        # self.prompt_loader = PromptLoader(self.app_config) # Old incorrect line
-        # print("ConclaveEnv.__init__: Initializing PromptLoader...") # DEBUG PRINT
-        # Construct path to prompts.yaml within the conclave/prompting directory
         prompts_file_path = Path(__file__).parent.parent / "prompting" / "prompts.yaml"
-        # print(f"ConclaveEnv.__init__: Prompts file path: {prompts_file_path.resolve()}") # DEBUG PRINT
-        self.prompt_loader = PromptLoader(str(prompts_file_path.resolve())) # Pass the correct path string
-        # print("ConclaveEnv.__init__: PromptLoader initialized.") # DEBUG PRINT
+        self.prompt_loader = PromptLoader(str(prompts_file_path.resolve()))
         
-        # print("ConclaveEnv.__init__: Initializing UnifiedPromptVariableGenerator...") # DEBUG PRINT
-        self.prompt_variable_generator = UnifiedPromptVariableGenerator(self, self.prompt_loader) # Pass self (env) and prompt_loader
-        # print("ConclaveEnv.__init__: UnifiedPromptVariableGenerator initialized.") # DEBUG PRINT
+        self.prompt_variable_generator = UnifiedPromptVariableGenerator(self, self.prompt_loader)
 
-        # LLM Client for Environment-level tool calls (e.g., discussion analyzer)
-        # This uses the same shared manager as agents but gets its own client instance if needed.
-        # Typically, environment tasks might use a specific configuration or even a different model.
-        # For now, we assume it can use a similar setup. Consider a separate config if distinct behavior is needed.
         try:
-            # Use centralized LLM client management for environment tasks
             self.env_llm_client = get_llm_client("environment")
-            self.env_tool_caller = SimplifiedToolCaller(self.env_llm_client, logger) # Use environment's logger
+            self.env_tool_caller = SimplifiedToolCaller(self.env_llm_client, logger)
             logger.info(f"ConclaveEnv initialized its own LLM client: {self.env_llm_client.model_name} for environment tasks.")
         except Exception as e:
             logger.error(f"Failed to initialize LLM client for ConclaveEnv: {e}")
             self.env_llm_client = None
             self.env_tool_caller = None
 
-        # Extract relevant config sections for easier access
-        # print("ConclaveEnv.__init__: Extracting config sections...") # DEBUG PRINT
-        self.agent_config = self.app_config.models  # Updated to use 'models' instead of 'agent'
+        self.agent_config = self.app_config.models
         self.simulation_config = self.app_config.simulation
         self.output_config = self.app_config.output
 
-        # Default number of speaking turns per agent within one run_discussion_round phase.
-        # This can be made configurable later if multi-turn discussions before analysis are needed.
-        # self.num_discussion_turns = 1 # REMOVED - simplifying to one round of speaking
-        # logger.debug(f"ConclaveEnv initialized") # Simpler log
-        logger.debug(f"ConclaveEnv initialized with app_config: {self.app_config.model_dump_json(indent=2)}") # More detailed log
+        logger.debug(f"ConclaveEnv initialized with app_config: {self.app_config.model_dump_json(indent=2)}")
 
-        self.num_agents = self.config_manager.get_num_cardinals()  # Get from config manager instead
+        self.num_agents = self.config_manager.get_num_cardinals()
         self.discussion_group_size = self.simulation_config.discussion_group_size
         self.max_election_rounds = self.simulation_config.max_election_rounds
         self.min_discussion_words = self.simulation_config.discussion_length.min_words
@@ -151,37 +124,22 @@ class ConclaveEnv:
                 self.predefined_groups_enabled = False
         else:
             self.predefined_groups_enabled = False
-        # print("ConclaveEnv.__init__: Testing groups configuration processed.") # DEBUG PRINT
 
-        # Initialize agents
-        # print("ConclaveEnv.__init__: Calling _initialize_agents...") # DEBUG PRINT
         self.agents = self._initialize_agents()
-        # print("ConclaveEnv.__init__: _initialize_agents DONE.") # DEBUG PRINT
         
-        # Initialize network after agents are loaded
         self.network_manager.initialize_network(self.agents)
         
-        # Initialize BreakoutScheduler for group assignments
         self._initialize_breakout_scheduler()
-        
-        # print("ConclaveEnv.__init__ FINISHED") # DEBUG PRINT
 
     def _initialize_agents(self) -> List[Agent]:
-        # print("ConclaveEnv._initialize_agents STARTED") # DEBUG PRINT
         """Load agents based on testing groups configuration or all agents in normal mode."""
-        # Read cardinals from the master CSV file
-        # Ensure the path is correct, relative to the project root
-        # print("ConclaveEnv._initialize_agents: Determining project root...") # DEBUG PRINT
         project_root = Path(__file__).parent.parent.parent 
         cardinals_data_path = project_root / "data" / "cardinals_master_data.csv"
-        # print(f"ConclaveEnv._initialize_agents: Cardinals data path: {cardinals_data_path}") # DEBUG PRINT
         master_df = pd.read_csv(cardinals_data_path)
-        # print(f"ConclaveEnv._initialize_agents: Successfully read CSV. Shape: {master_df.shape}") # DEBUG PRINT
         
-        loaded_agents = [] # Temporary list to hold loaded agents
+        loaded_agents = []
 
         if self.predefined_groups_enabled:
-            # Get active group config using the current config object (handles CLI overrides)
             try:
                 # Always load groups.yaml from the project root, not from output directory
                 project_root = Path(__file__).parent.parent.parent
@@ -222,44 +180,30 @@ class ConclaveEnv:
             else:
                 master_df_to_load = master_df
                 logger.info(f"Loading all {len(master_df_to_load)} cardinals from CSV.")
-        # print(f"ConclaveEnv._initialize_agents: master_df_to_load shape: {master_df_to_load.shape}") # DEBUG PRINT
 
-        # Create Agent instances and add them to env.agents
-        # print("ConclaveEnv._initialize_agents: Starting agent creation loop...") # DEBUG PRINT
         for list_index, (idx, row) in enumerate(master_df_to_load.iterrows()):
-            # if list_index == 0: # DEBUG PRINT for first agent
-                # print(f"ConclaveEnv._initialize_agents: Creating first agent (list_index=0): {row['Name']}") # DEBUG PRINT
-            # Get all available prompts and tools for the agent
-            # available_prompts = self.prompt_loader.get_all_prompts() # Not passed to Agent constructor
-            # available_tools = list(self.prompt_loader.prompts_config.tool_definitions.values()) if self.prompt_loader.prompts_config else [] # Not passed to Agent constructor
-
             agent = Agent(
-                agent_id=list_index,  # Use sequential index for internal agent_id
+                agent_id=list_index,
                 name=row['Name'],
-                conclave_env=self, # Pass the environment instance
-                personality=row.get('Internal_Persona', ''), # Assuming Internal_Persona maps to personality
-                initial_stance=row.get('Public_Profile', ''), # Assuming Public_Profile maps to initial_stance
-                party_loyalty=0.5 # Placeholder, needs to be sourced or defined
+                conclave_env=self,
+                personality=row.get('Internal_Persona', ''),
+                initial_stance=row.get('Public_Profile', ''),
+                party_loyalty=0.5
             )
-            # Set CSV-specific attributes, including cardinal_id which is crucial for mapping
-            agent.cardinal_id = row['Cardinal_ID'] # Ensure cardinal_id is set directly for mapping
-            agent.background_csv = row['Background'] # Store Background from CSV
+            agent.cardinal_id = row['Cardinal_ID']
+            agent.background_csv = row['Background']
             agent.internal_persona_csv = row.get('Internal_Persona', '')
             agent.public_profile_csv = row.get('Public_Profile', '')
             agent.profile_blurb_csv = row.get('Persona_Tag', '')
             agent.persona_tag_csv = row.get('Persona_Tag', '')
 
             loaded_agents.append(agent)
-        # print(f"ConclaveEnv._initialize_agents: Agent creation loop finished. {len(loaded_agents)} agents loaded.") # DEBUG PRINT
         
-        # Update self.num_agents to reflect the actual number of loaded agents
         self.num_agents = len(loaded_agents)
-        # print(f"ConclaveEnv._initialize_agents: self.num_agents updated to {self.num_agents}") # DEBUG PRINT
 
-        # Update candidate_ids to map Cardinal_IDs to agent_ids if predefined groups are enabled
         if self.predefined_groups_enabled:
-            # Get active group config using the current config object (handles CLI overrides)
             try:
+                # Get active group config using the current config object (handles CLI overrides)
                 # Always load groups.yaml from the project root, not from output directory
                 project_root = Path(__file__).parent.parent.parent
                 groups_file_path = project_root / "config" / "groups.yaml"
@@ -296,13 +240,11 @@ class ConclaveEnv:
                 self.candidate_ids = list(range(num_candidates))
                 logger.warning(f"Groups file not found, using default candidate mapping: {self.candidate_ids}")
         else:
-            self.candidate_ids = list(range(self.num_agents)) # All loaded agents are potential candidates
-        # print(f"ConclaveEnv._initialize_agents: Candidate IDs set: {self.candidate_ids}") # DEBUG PRINT
+            self.candidate_ids = list(range(self.num_agents))
 
         logger.info(f"Successfully loaded {self.num_agents} agents.")
         if self.predefined_groups_enabled:
             logger.info(f"Predefined group '{self.active_group_name}' active. Candidate agent_ids: {self.candidate_ids}")
-        # print("ConclaveEnv._initialize_agents FINISHED") # DEBUG PRINT
         return loaded_agents
 
     def freeze_agent_count(self):
