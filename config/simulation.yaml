@@ -12,14 +12,11 @@ simulation:
   
   # Network-based grouping configuration
   grouping:
-    enabled: true
-    method: "network_utility"  # Options: "random", "network_utility", "simple"
-    group_size: 5
+    room_size: 5
+    rationality: 1.0  # 1.0 = fully utility-based, 0.0 = fully random
+    penalty_weight: 0.1  # Weight for avoiding repeated pairings
     utility_weights:
-      connection: 1.0      # w1: connection strength weight
-      ideology: 0.5        # w2: ideological proximity weight  
-      influence: 0.2       # w3: influenceability weight
-      interaction: 0.0     # w4: interaction term weight (for future use)
-    stochasticity: 0.5     # 0.0 = deterministic, 1.0 = fully random
-    leader_stochasticity: 0.1  # Randomness in leader selection
-    seed: 42               # For reproducible results
+      connection: 1.0
+      ideology: 1.0  
+      influence: 1.0
+      interaction: 1.0

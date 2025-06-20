@@ -95,14 +95,10 @@ class UtilityWeightsConfig(BaseModel):
 
 class GroupingConfig(BaseModel):
     """Network-based grouping configuration."""
-    enabled: bool = Field(default=True, description="Enable network-based grouping")
-    method: str = Field(default="network_utility", description="Grouping method: 'network_utility', 'random', 'simple'")
-    group_size: int = Field(default=5, description="Target size for discussion groups")
-    min_group_size: int = Field(default=3, description="Minimum size for discussion groups (prevents groups that are too small)")
+    room_size: int = Field(default=5, description="Target size for discussion groups (BreakoutScheduler room_size)")
+    rationality: float = Field(default=1.0, description="Balance between utility-based (1.0) and random (0.0) selection")
+    penalty_weight: float = Field(default=0.1, description="Weight for avoiding repeated pairings")
     utility_weights: UtilityWeightsConfig = Field(default_factory=UtilityWeightsConfig)
-    stochasticity: float = Field(default=0.5, description="Stochasticity in member selection (0.0=deterministic, 1.0=random)")
-    leader_stochasticity: float = Field(default=0.1, description="Stochasticity in leader selection")
-    seed: Optional[int] = Field(default=42, description="Random seed for reproducible results")
 
 
 class SimulationConfig(BaseModel):

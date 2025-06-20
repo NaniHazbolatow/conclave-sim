@@ -101,6 +101,9 @@ class ConclaveEnv:
 
         # Initialize network manager for grouping
         self.network_manager = NetworkManager(self.config_manager)
+        
+        # Initialize BreakoutScheduler (will be set up when agents are created)
+        self.breakout_scheduler = None
 
         # Testing groups configuration (if enabled)
         if self.app_config.testing_groups and self.app_config.testing_groups.enabled:
@@ -131,6 +134,9 @@ class ConclaveEnv:
         
         # Initialize network after agents are loaded
         self.network_manager.initialize_network(self.agents)
+        
+        # Initialize BreakoutScheduler for group assignments
+        self._initialize_breakout_scheduler()
         
         # print("ConclaveEnv.__init__ FINISHED") # DEBUG PRINT
 
@@ -389,6 +395,9 @@ class ConclaveEnv:
 
         current_discussion_groups = self._generate_discussion_group_assignments()
         
+        # Store the discussion groups for reflection phase
+        self._last_discussion_groups = current_discussion_groups
+        
         all_comments_for_phase: List[Dict[str, Any]] = [] 
 
         if not current_discussion_groups:
@@ -540,79 +549,121 @@ class ConclaveEnv:
         # Results are in self.group_discussion_analyses
 
     def _generate_discussion_group_assignments(self) -> List[List[int]]:
-        logger.debug("Entering _generate_discussion_group_assignments")
+        """Generate discussion groups using BreakoutScheduler."""
+        logger.debug("Generating discussion groups with BreakoutScheduler")
         
-        # Get grouping configuration
-        grouping_config = self.simulation_config.grouping if hasattr(self.simulation_config, 'grouping') else {}
+        # Ensure BreakoutScheduler is initialized
+        if self.breakout_scheduler is None:
+            logger.warning("BreakoutScheduler not initialized, initializing now")
+            self._initialize_breakout_scheduler()
         
-        # Override with testing group config if active
-        if self.testing_groups_enabled:
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-            if hasattr(active_group_details.override_settings, 'grouping'):
-                grouping_config = active_group_details.override_settings.grouping
-                logger.info(f"Using testing group '{self.active_testing_group_name}' grouping configuration")
-        
-        # Use network manager to generate groups
-        try:
-            # Pass the Pydantic model directly to the network manager
-            groups = self.network_manager.generate_groups(grouping_config, self.agents)
-            
-            if not groups:
-                logger.warning("Network manager returned no groups, falling back to simple random grouping")
-                groups = self._generate_fallback_groups()
-            
-            # Log group assignment summary
-            summary = self.network_manager.get_group_summary()
-            logger.info(f"Generated {summary['total_groups']} discussion groups:")
-            logger.info(f"  Total agents: {summary['total_agents']}")
-            logger.info(f"  Group sizes: {summary['group_sizes']}")
-            logger.info(f"  Average group size: {summary['avg_group_size']:.1f}")
-            
-            # Store for reference
-            self._last_discussion_groups = groups
-            
-            return groups
-            
-        except Exception as e:
-            logger.error(f"Error generating network-based groups: {e}")
-            logger.warning("Falling back to simple random grouping")
-            return self._generate_fallback_groups()
-
-    def _generate_fallback_groups(self) -> List[List[int]]:
-        """Generate simple fallback groups when network grouping fails."""
-        discussion_group_size = self.discussion_group_size
-        
-        if discussion_group_size < 2:
-            logger.warning(
-                f"Configured 'discussion_group_size' ({discussion_group_size}) is less than 2. "
-                f"Adjusting to 2 for discussion group formation."
-            )
-            discussion_group_size = 2
-
-        agent_ids = list(range(len(self.agents)))
-        if not agent_ids:
-            logger.warning("No agents available to form discussion groups.")
-            self._last_discussion_groups = []
+        if self.breakout_scheduler is None:
+            logger.error("Failed to initialize BreakoutScheduler, cannot generate groups")
             return []
-            
-        random.shuffle(agent_ids)
-
-        groups = []
-        i = 0
-        num_total_agents = len(agent_ids)
-        while i < num_total_agents:
-            groups.append(agent_ids[i : i + discussion_group_size])
-            i += discussion_group_size
-
-        # Avoid singleton groups
-        if len(groups) > 1 and len(groups[-1]) == 1:
-            if len(groups[-2]) > 0: 
-                element_to_move = groups[-2].pop()
-                groups[-1].insert(0, element_to_move)
         
-        groups = [g for g in groups if g]
-        logger.debug(f"Generated fallback discussion groups: {groups}")
-        return groups
+        # Generate groups for this round using BreakoutScheduler
+        cardinal_groups = self.breakout_scheduler.next_round()
+        
+        # Convert cardinal_id groups to agent_id groups
+        agent_groups = []
+        assigned_agent_ids = set()
+        
+        for i, cardinal_group in enumerate(cardinal_groups):
+            agent_group = []
+            missing_cardinals = []
+            for cardinal_id in cardinal_group:
+                if cardinal_id in self.network_manager.cardinal_id_to_agent_id_map:
+                    agent_id = self.network_manager.cardinal_id_to_agent_id_map[cardinal_id]
+                    agent_group.append(agent_id)
+                    assigned_agent_ids.add(agent_id)
+                else:
+                    missing_cardinals.append(cardinal_id)
+            
+            if missing_cardinals:
+                logger.warning(f"Group {i+1}: Cardinals {missing_cardinals} not found in cardinal_id_to_agent_id_map")
+            
+            if agent_group:  # Only add non-empty groups
+                agent_groups.append(agent_group)
+        
+        # Check for unassigned agents and create fallback groups
+        all_agent_ids = set(range(len(self.agents)))
+        unassigned_agent_ids = all_agent_ids - assigned_agent_ids
+        
+        if unassigned_agent_ids:
+            logger.warning(f"Agents {sorted(unassigned_agent_ids)} not assigned to any group by BreakoutScheduler")
+            # Create additional groups for unassigned agents
+            unassigned_list = list(unassigned_agent_ids)
+            room_size = 5  # Match the BreakoutScheduler room_size
+            for i in range(0, len(unassigned_list), room_size):
+                fallback_group = unassigned_list[i:i + room_size]
+                agent_groups.append(fallback_group)
+                logger.info(f"Created fallback group: {fallback_group}")
+        
+        logger.info(f"BreakoutScheduler generated {len(agent_groups)} groups for round {self.breakout_scheduler._round}")
+        for i, group in enumerate(agent_groups):
+            logger.info(f"  Group {i+1}: {len(group)} members")
+        
+        return agent_groups
+
+    def _initialize_breakout_scheduler(self):
+        """Initialize the BreakoutScheduler with the bocconi network."""
+        import pickle
+        import os
+        from conclave.network.breakout_scheduler import BreakoutScheduler
+        
+        # Load the bocconi graph
+        project_root = Path(__file__).parent.parent.parent
+        graph_path = project_root / "data" / "network" / "bocconi_graph.gpickle"
+        
+        with open(graph_path, 'rb') as f:
+            G_multiplex = pickle.load(f)
+        
+        logger.info(f"Loaded bocconi network with {len(G_multiplex.nodes)} nodes")
+        
+        # Initialize the network manager mappings
+        self.network_manager.initialize_network(self.agents)
+        
+        # Get the cardinal_ids that are actually in the simulation
+        simulation_cardinal_ids = set()
+        for agent in self.agents:
+            if hasattr(agent, 'cardinal_id') and agent.cardinal_id is not None:
+                simulation_cardinal_ids.add(agent.cardinal_id)
+        
+        logger.info(f"Simulation has {len(simulation_cardinal_ids)} cardinals")
+        
+        # Create subgraph with only cardinals from the simulation
+        available_cardinal_ids = simulation_cardinal_ids.intersection(set(G_multiplex.nodes()))
+        
+        if len(available_cardinal_ids) == 0:
+            logger.error("No cardinal IDs from simulation found in network!")
+            self.breakout_scheduler = None
+            return
+            
+        G_simulation = G_multiplex.subgraph(available_cardinal_ids).copy()
+        logger.info(f"Created simulation subgraph with {len(G_simulation.nodes)} nodes and {len(G_simulation.edges)} edges")
+        
+        missing_simulation_cardinals = simulation_cardinal_ids - set(G_multiplex.nodes())
+        if missing_simulation_cardinals:
+            logger.warning(f"Cardinals in simulation but not in network: {missing_simulation_cardinals}")
+        
+        # Create BreakoutScheduler with the filtered network
+        grouping_config = self.simulation_config.grouping
+        weights = (
+            grouping_config.utility_weights.connection,
+            grouping_config.utility_weights.ideology,
+            grouping_config.utility_weights.influence,
+            grouping_config.utility_weights.interaction
+        )
+        
+        self.breakout_scheduler = BreakoutScheduler(
+            G_simulation, 
+            room_size=grouping_config.room_size,
+            rationality=grouping_config.rationality,
+            penalty_weight=grouping_config.penalty_weight,
+            weights=weights
+        )
+        
+        logger.info("BreakoutScheduler initialized successfully")
 
     def _analyze_single_group_discussion(self, group_idx: int, group_agent_ids: List[int], group_transcript_comments: List[Dict[str, Any]]):
         """Analyzes a single group's discussion transcript and stores the result."""

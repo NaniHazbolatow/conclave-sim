@@ -16,9 +16,9 @@ llm:
     top_p: 0.9
     repetition_penalty: 1.1
   remote:
-    #model_name: meta-llama/llama-3.1-8b-instruct
+    model_name: meta-llama/llama-3.1-8b-instruct
     #model_name: google/gemini-2.5-flash-preview-05-20
-    model_name: google/gemini-2.0-flash-001
+    #model_name: google/gemini-2.0-flash-001
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
     top_p: 0.9
