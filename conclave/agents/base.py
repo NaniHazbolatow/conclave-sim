@@ -14,7 +14,8 @@ if TYPE_CHECKING:
 
 import datetime
 import logging
-from conclave.config import get_config_manager, get_config
+from conclave.config import get_config_manager  # Keep for backward compatibility if needed
+from config.scripts import get_config  # New config adapter
 from conclave.llm import get_llm_client, SimplifiedToolCaller
 from ..prompting import get_prompt_loader
 from ..prompting.unified_generator import UnifiedPromptVariableGenerator
@@ -55,7 +56,7 @@ class Agent(VotingMixin, DiscussionMixin, StanceMixin, ReflectionMixin):
         # Core identity
         self.agent_id = agent_id
         self.conclave_env = conclave_env
-        self.config_manager = get_config_manager()
+        self.config_manager = get_config()  # Use new config adapter
         self.name = name
         self.env = conclave_env
         
@@ -77,7 +78,7 @@ class Agent(VotingMixin, DiscussionMixin, StanceMixin, ReflectionMixin):
         self.last_reflection_timestamp: Optional[datetime.datetime] = None
         
         # Configuration and tools
-        self.config = self.config_manager.config
+        self.config = self.config_manager.config  # ConfigAdapter.config is the RefactoredConfig object
         self.logger = logging.getLogger(f"conclave.agents.{self.name.replace(' ', '_')}")
         
         # Prompt system
@@ -89,7 +90,7 @@ class Agent(VotingMixin, DiscussionMixin, StanceMixin, ReflectionMixin):
             self.llm_client = get_llm_client("agent")
             self.tool_caller = SimplifiedToolCaller(self.llm_client, self.logger)
             
-            self.logger.info(f"Agent {self.name} initialized with {self.config.agent.llm.backend} backend, model: {self.llm_client.model_name}")
+            self.logger.info(f"Agent {self.name} initialized with {self.config.models.llm.backend} backend, model: {self.llm_client.model_name}")
             
         except Exception as e:
             self.logger.error(f"Failed to initialize LLM client for agent {self.name}: {e}")

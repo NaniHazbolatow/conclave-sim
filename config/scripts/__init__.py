@@ -17,7 +17,8 @@ Configuration files are expected to be in the same directory:
 - `agent.yaml`: LLM and embedding model settings.
 - `simulation.yaml`: Core simulation parameters.
 - `output.yaml`: Logging, results, and visualization settings.
-- `testing_groups.yaml`: Configuration for different testing scenarios.
+- `predefined_groups.yaml`: Configuration for predefined simulation groups.
+- `simulation_settings.yaml`: Configuration for simulation parameters.
 """
 
 from .loader import RefactoredConfigLoader, load_config, get_config_loader

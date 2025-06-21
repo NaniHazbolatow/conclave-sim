@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from .loader import load_config, get_config_loader
-from .models import RefactoredConfig, TestingGroupsConfig, LLMConfig, ToolCallingConfig
+from .models import RefactoredConfig, LLMConfig, ToolCallingConfig
 
 
 # Define Filter classes for logging
@@ -95,10 +95,9 @@ class ConfigAdapter:
             self.loader = get_config_loader(str(self.config_dir))
 
         elif config_dir is None:
-            # Default to the parent directory (config/) where YAML files are located
+            # Default to the project root where config.yaml is located
             project_root = Path(__file__).parent.parent.parent
-            config_dir = project_root / "config"
-            self.config_dir = Path(config_dir)
+            self.config_dir = project_root
             self.config: RefactoredConfig = load_config(str(self.config_dir))
             self.config_path = self.config_dir
             self.loader = get_config_loader(str(self.config_dir))
@@ -191,10 +190,26 @@ class ConfigAdapter:
         httpx_logger.propagate = True
 
     def get_num_cardinals(self) -> int:
-        """Get number of cardinals from simulation config."""
-        # Check for testing group overrides
-        sim_config = self.loader.get_simulation_config_with_overrides()
-        return sim_config.get("num_cardinals", self.config.simulation.num_cardinals)
+        """Get number of cardinals from active group configuration."""
+        if not self.config.groups or not self.config.groups.active:
+            # Fallback if no groups config
+            return self.loader.get_num_cardinals()
+        
+        # Use the active group from the current config object (handles CLI overrides)
+        active_group = self.config.groups.active
+        
+        try:
+            # Load groups data directly from groups.yaml
+            groups_data = self.loader.load_yaml_file("config/groups.yaml")
+            
+            if active_group in groups_data.get("predefined_groups", {}):
+                group_config = groups_data["predefined_groups"][active_group]
+                return group_config.get("total_cardinals", len(group_config.get("cardinal_ids", [])))
+        except FileNotFoundError:
+            pass
+        
+        # Fallback to loader method if group not found
+        return self.loader.get_num_cardinals()
     
     def get_discussion_group_size(self) -> int:
         """Get discussion group size from simulation config."""
@@ -228,10 +243,16 @@ class ConfigAdapter:
         """Get tool calling configuration section."""
         return self.get_llm_config().tool_calling # Return the Pydantic model
 
-    def get_testing_groups_config(self) -> Optional[Dict[str, Any]]:
-        """Get the testing groups configuration dictionary."""
-        if self.config.testing_groups:
-            return self.config.testing_groups.dict()
+    def get_predefined_groups_config(self) -> Optional[Dict[str, Any]]:
+        """Get the predefined groups configuration dictionary."""
+        if self.config.predefined_groups:
+            return self.config.predefined_groups.dict()
+        return None
+
+    def get_simulation_settings_config(self) -> Optional[Dict[str, Any]]:
+        """Get the simulation settings configuration dictionary."""
+        if self.config.simulation_settings:
+            return self.config.simulation_settings.dict()
         return None
 
     def get_discussion_min_words(self) -> int:
@@ -283,13 +304,52 @@ class ConfigAdapter:
         configs_used_dir = output_dir / "configs_used"
         configs_used_dir.mkdir(exist_ok=True)
         
-        # Copy all YAML files from refactored config directory
-        for yaml_file in self.config_dir.glob("*.yaml"):
-            try:
-                shutil.copy(yaml_file, configs_used_dir / yaml_file.name)
-                logging.info(f"Copied {yaml_file.name} to {configs_used_dir}")
-            except Exception as e:
-                logging.error(f"Error copying {yaml_file.name}: {e}")
+        # Save the current config object (with any CLI overrides applied) as config.yaml
+        config_with_overrides_path = configs_used_dir / "config.yaml"
+        self.config.save_to_file(
+            config_with_overrides_path, 
+            include_cli_overrides_note=True
+        )
+        logging.info(f"Saved config with CLI overrides to {config_with_overrides_path}")
+        
+        # Copy other YAML files (groups.yaml, etc.) from config directory
+        # Skip groups.yaml since it doesn't need to be in output
+        config_subdir = self.config_dir / "config"
+        if config_subdir.exists():
+            for yaml_file in config_subdir.glob("*.yaml"):
+                if yaml_file.name == "groups.yaml":
+                    continue  # Skip groups.yaml - it doesn't need to be in output
+                try:
+                    shutil.copy(yaml_file, configs_used_dir / yaml_file.name)
+                    logging.info(f"Copied {yaml_file.name} to {configs_used_dir}")
+                except Exception as e:
+                    logging.error(f"Error copying {yaml_file.name}: {e}")
+                except Exception as e:
+                    logging.error(f"Error copying {yaml_file.name}: {e}")
+
+    def set_as_global_config(self):
+        """Set this config adapter as the global singleton instance."""
+        global _config_adapter
+        _config_adapter = self
+    
+    def create_config_manager_from_output_dir(self, output_dir: Path) -> 'ConfigAdapter':
+        """Create a new config manager that loads from the output directory.
+        
+        This allows the environment to load the exact config used for the simulation,
+        including any CLI overrides.
+        
+        Args:
+            output_dir: Output directory containing configs_used folder
+            
+        Returns:
+            New ConfigAdapter instance loading from output directory
+        """
+        configs_used_dir = output_dir / "configs_used"
+        if not configs_used_dir.exists():
+            raise FileNotFoundError(f"configs_used directory not found: {configs_used_dir}")
+        
+        # Create new adapter that loads from the output directory
+        return ConfigAdapter(config_dir=str(configs_used_dir))
 
 
 # Global instance for backwards compatibility

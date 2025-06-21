@@ -33,7 +33,7 @@ class ReflectionMixin:
         logger.debug(f"Agent {self.name} (ID: {self.agent_id}) entering reflect_on_discussion for D_Round {current_discussion_round}.")
         logger.debug(f"Agent {self.name} received group_analysis_summary: {'Present' if group_analysis_summary else 'Absent'}")
         
-        allow_reflection_config = self.config.agent.allow_reflection_without_summary
+        allow_reflection_config = self.config.agents.get('allow_reflection_without_summary', True)  # Default to True if not set
         logger.debug(f"Agent {self.name} config allow_reflection_without_summary: {allow_reflection_config}")
 
         if not group_analysis_summary and not allow_reflection_config:

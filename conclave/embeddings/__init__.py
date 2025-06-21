@@ -358,31 +358,66 @@ class EmbeddingClient:
         
         return agent_embeddings
     
-    def update_agent_embeddings_in_history(self, agents: List, round_num: int) -> None:
+    def update_agent_embeddings_in_history(self, agents: List, round_num: str) -> None:
         """
         Update the embedding history for all agents after stance generation.
         
         Args:
-            agents: List of agents with stance_history
-            round_num: Current round number
+            agents: List of agents with stance_history or internal_stance
+            round_num: Current round identifier (e.g., "initial", "ER1.D1")
         """
         logger.info(f"Updating embeddings for round {round_num}...")
         
         for agent in agents:
-            if hasattr(agent, 'stance_history') and agent.stance_history:
-                # Get the latest stance for this round
-                latest_stance = None
-                for stance_entry in reversed(agent.stance_history):
-                    if isinstance(stance_entry, dict):
-                        if stance_entry.get('round', -1) == round_num:
-                            latest_stance = stance_entry.get('stance', '')
-                            break
-                    else:
-                        # Handle old format - assume it's the latest if we're here
-                        latest_stance = stance_entry
-                        break
+            latest_stance = None
+            
+            # For "initial" round, try to get the current internal_stance
+            if round_num == "initial":
+                latest_stance = getattr(agent, 'internal_stance', None)
+            else:
+                # For other rounds, look in stance_history for matching round
+                if hasattr(agent, 'stance_history') and agent.stance_history:
+                    # Parse round identifier (e.g., "ER1.D1" -> voting_round=1, discussion_round=1)
+                    try:
+                        if round_num.startswith("ER") and ".D" in round_num:
+                            parts = round_num.replace("ER", "").split(".D")
+                            voting_round = int(parts[0])
+                            discussion_round = int(parts[1])
+                            
+                            # Find the latest stance for this round
+                            for stance_entry in reversed(agent.stance_history):
+                                if isinstance(stance_entry, dict):
+                                    entry_voting = stance_entry.get('voting_round', -1)
+                                    entry_discussion = stance_entry.get('discussion_round', -1)
+                                    
+                                    if entry_voting == voting_round and entry_discussion == discussion_round:
+                                        latest_stance = stance_entry.get('stance', '')
+                                        break
+                                else:
+                                    # Handle old format - use the latest stance as fallback
+                                    latest_stance = stance_entry
+                                    break
+                        else:
+                            # Try direct match with round number for backward compatibility
+                            for stance_entry in reversed(agent.stance_history):
+                                if isinstance(stance_entry, dict):
+                                    if stance_entry.get('round', -1) == round_num:
+                                        latest_stance = stance_entry.get('stance', '')
+                                        break
+                                else:
+                                    latest_stance = stance_entry
+                                    break
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"Could not parse round identifier '{round_num}': {e}")
+                        # Fall back to using current internal_stance if available
+                        latest_stance = getattr(agent, 'internal_stance', None)
                 
-                if latest_stance:
+                # If no stance found in history, try current internal_stance as fallback
+                if not latest_stance:
+                    latest_stance = getattr(agent, 'internal_stance', None)
+            
+            if latest_stance and latest_stance.strip():
+                try:
                     # Generate embedding for this stance
                     embedding = self.get_embedding(latest_stance)
                     
@@ -392,6 +427,10 @@ class EmbeddingClient:
                     
                     agent.embedding_history[round_num] = embedding
                     logger.debug(f"Updated embedding for {agent.name} round {round_num}")
+                except Exception as e:
+                    logger.warning(f"Failed to generate embedding for {agent.name} round {round_num}: {e}")
+            else:
+                logger.debug(f"No stance found for {agent.name} round {round_num}")
         
         logger.info(f"Embeddings updated for round {round_num}")
 
