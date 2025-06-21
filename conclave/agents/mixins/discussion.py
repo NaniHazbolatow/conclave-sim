@@ -21,7 +21,7 @@ class DiscussionMixin:
         Variables are now primarily sourced via PromptVariableGenerator.
         `current_discussion_group_ids` is provided by the environment for the current sub-group.
         """
-        if self.env.testing_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
+        if self.env.predefined_groups_enabled and hasattr(self.env, 'is_candidate') and self.env.is_candidate(self.agent_id):
             self.role_tag = "CANDIDATE"
             prompt_name_to_use = "discussion_candidate"
         else:

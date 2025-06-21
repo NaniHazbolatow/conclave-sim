@@ -1,0 +1,101 @@
+# Main Configuration File for Conclave Simulation
+# Industry standard: single configuration file with all essential settings
+
+# Active predefined group - determines participants and simulation scope
+groups:
+  active: medium                      # Options: small, medium, large, xlarge, full
+
+simulation:
+  # Core simulation parameters
+  max_rounds: 20                      # Range: 1-50 (simulation stops after this many rounds)
+  enable_parallel: true               # Enable parallel processing for better performance
+  
+  # Agent behavior parameters
+  rationality: 0.7                    # Range: 0.0 (fully random) - 1.0 (fully rational/utility-based)
+  temperature: 0.7                    # Range: 0.0 (deterministic) - 2.0 (highly creative/random)
+  
+  # Discussion settings
+  discussion_group_size: 5            # Number of agents per discussion group
+  discussion_length:
+    min_words: 50                     # Minimum word count for discussions
+    max_words: 100                    # Maximum word count for discussions
+  
+  # Voting rules
+  voting:
+    require_reasoning: true           # Cardinals must explain their vote
+    supermajority_threshold: 0.667    # Threshold for electing Pope (2/3 majority)
+  
+  # Network-based grouping configuration
+  grouping:
+    penalty_weight: 0.1               # Weight for avoiding repeated pairings
+    utility_weights:
+      connection: 1.0                 # Connection strength weight
+      ideology: 1.0                   # Ideological proximity weight  
+      influence: 1.0                  # Influenceability weight
+      interaction: 1.0                # Interaction term weight
+
+# LLM and model configuration
+models:
+  llm:
+    backend: remote                   # Options: 'remote' | 'local'
+    model_name: meta-llama/llama-3.1-8b-instruct
+    max_tokens: 500
+    
+    # Tool calling configuration
+    tool_calling:
+      max_retries: 3
+      retry_delay: 1.0
+      retry_backoff_sec: 2
+      enable_fallback: true
+    
+    # Remote API configuration
+    remote:
+      base_url: https://openrouter.ai/api/v1
+      api_key_env: OPENROUTER_API_KEY
+      top_p: 0.9
+      frequency_penalty: 0.1
+      presence_penalty: 0.1
+    
+    # Local model configuration  
+    local:
+      use_quantization: false
+      device: auto
+      cache_dir: ~/.cache/huggingface
+      do_sample: true
+      top_p: 0.9
+      repetition_penalty: 1.1
+  
+  # Embeddings configuration
+  embeddings:
+    model_name: intfloat/e5-large-v2
+    device: auto
+    batch_size: 32
+    enable_caching: true
+    cache_dir: ~/.cache/embeddings
+    similarity_threshold: 0.7
+    max_search_results: 10
+
+# Output and logging configuration
+output:
+  # Logging settings
+  logging:
+    log_level: INFO                   # Options: DEBUG, INFO, WARNING, ERROR
+    performance_logging: true
+  
+  # Results saving
+  results:
+    save_individual_votes: true
+    save_discussion_transcripts: true
+    save_agent_states: false
+  
+  # Visualization settings
+  visualization:
+    auto_generate: true
+    include_network_graphs: true
+    output_format: png                # Options: png, svg, pdf
+    dpi: 300
+    reduction_method: tsne            # Options: pca, tsne, umap
+
+# Agent behavior settings
+agents:
+  allow_reflection_without_summary: true

@@ -8,7 +8,7 @@ and simplifying tool calling by using prompt-based approach for all models.
 import threading
 import logging
 from typing import Optional, Dict, Any
-from conclave.config import get_config_manager
+from config.scripts import get_config  # Use new config adapter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
@@ -43,7 +43,7 @@ class LLMClientManager:
     
     def _initialize(self):
         """Initialize the client manager."""
-        self.config_manager = get_config_manager()
+        self.config_manager = get_config()  # Use new config adapter
         logger.info("LLMClientManager initialized")
     
     def get_client(self, client_type: str = "default"):
@@ -65,7 +65,7 @@ class LLMClientManager:
                 return self._clients[client_type]
             
             # Create new client
-            llm_config = self.config_manager.agent_config.llm
+            llm_config = self.config_manager.config.models.llm  # Updated path for new config structure
             
             if llm_config.backend == 'local':
                 logger.info("Creating local LLM client")
@@ -143,7 +143,7 @@ class LLMClientManager:
                 return self.generate(prompt, **kwargs)
         
         # Get configuration
-        client_kwargs = self.config_manager.adapter.get_llm_client_kwargs()
+        client_kwargs = self.config_manager.get_llm_client_kwargs()  # ConfigAdapter has this method directly
         model_name = client_kwargs.get("model_name", "openai/gpt-4o-mini")
         api_key = client_kwargs.get("api_key")
         

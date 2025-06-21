@@ -96,12 +96,15 @@ class VotingVariableGenerator(BaseVariableGenerator):
         return sum(current_votes.values()) if current_votes else 0
     
     def get_required_majority(self) -> int:
-        """Calculate the required majority for election."""
-        total_electors = len([agent for agent in self.env.agents if getattr(agent, 'role_tag', 'ELECTOR') == 'ELECTOR'])
-        # Two-thirds majority: electors * (2/3), rounded up
-        import math
-        threshold = math.ceil(total_electors * (2/3))
-        self.logger.debug(f"Calculated threshold: {threshold} for {total_electors} electors (total_electors * 2/3)")
+        """Calculate the required majority for election using configured threshold."""
+        # Count ALL agents/cardinals, not just those with role_tag 'ELECTOR'
+        # In a papal conclave, all cardinals participate and count toward the threshold
+        total_cardinals = len(self.env.agents)
+        # Use the configured supermajority threshold from environment
+        configured_threshold = getattr(self.env, 'supermajority_threshold', 0.667)
+        # Simple calculation: total_cardinals * 2/3, rounded down (int conversion)
+        threshold = int(total_cardinals * configured_threshold)
+        self.logger.debug(f"Calculated threshold: {threshold} for {total_cardinals} cardinals (total_cardinals * {configured_threshold})")
         return threshold
     
     def get_election_status(self) -> str:

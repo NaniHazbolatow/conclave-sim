@@ -7,12 +7,13 @@ from pathlib import Path # Add Path import
 from concurrent.futures import ThreadPoolExecutor # Add ThreadPoolExecutor import
 from tqdm import tqdm # Add tqdm import
 import pandas as pd # Add pandas import
-import numpy as np # Add numpy import
+import numpy as np # Add numpy import for data export methods
 
 from conclave.agents.base import Agent # For type hinting, removed AgentSettings, LLMSettings, EmbeddingSettings
 from conclave.prompting.prompt_loader import PromptLoader # Corrected import to use prompting
 from conclave.prompting.unified_generator import UnifiedPromptVariableGenerator
 from conclave.config import get_config_manager # Use centralized config management
+from config.scripts import get_config  # Import new config adapter
 from conclave.llm import get_llm_client, SimplifiedToolCaller # Use new simplified tool calling
 from conclave.network.network_manager import NetworkManager # Add network manager import
 from config.scripts.models import RefactoredConfig
@@ -25,73 +26,46 @@ logger = logging.getLogger(__name__)
 discussion_logger = logging.getLogger('conclave.discussions') 
 
 class ConclaveEnv:
-    def __init__(self, viz_dir: Optional[str] = None): # Add viz_dir and allow num_agents to be set by config
-        # print("ConclaveEnv.__init__ STARTED") # DEBUG PRINT
-        self.agents: List[Agent] = [] # Type hint for self.agents
-        self.viz_dir = viz_dir # Store viz_dir
-        self.votingRound = 0 # Initialize to 0. multi_round.py will set it to 1, 2, ... for each round.
+    def __init__(self, viz_dir: Optional[str] = None):
+        self.agents: List[Agent] = []
+        self.viz_dir = viz_dir
+        self.votingRound = 0
         self.votingHistory = []
         self.votingBuffer = {}
-        # Track individual votes: {voter_agent_id: candidate_id} for current round
         self.individual_votes_buffer = {}
-        # Track individual votes history: List of {voter_agent_id: candidate_id} for each round
         self.individual_votes_history = []
-        # Track which agents participated in which discussion rounds
         self.agent_discussion_participation = {}
-        # Track which agents voted in each round
         self.voting_participation = {}
         self.voting_lock = threading.Lock()
-        self.winner: Optional[int] = None # Winner will be an agent_id (int)
-        self.discussionHistory: List[List[Dict]] = [] # List of rounds, each round is a list of comment dicts
+        self.winner: Optional[int] = None
+        self.discussionHistory: List[List[Dict]] = []
         self.discussionRound = 0
-        self.agent_discussion_participation: Dict[int, List[int]] = {} # agent_id -> list of discussion_round_numbers
+        self.agent_discussion_participation: Dict[int, List[int]] = {}
 
-        # Initialize config manager and load configuration
-        # print("ConclaveEnv.__init__: Initializing ConfigManager...") # DEBUG PRINT
-        self.config_manager = get_config_manager()
-        self.app_config: RefactoredConfig = self.config_manager.config # Access config directly
-        # print("ConclaveEnv.__init__: ConfigManager initialized.") # DEBUG PRINT
+        self.config_manager = get_config()
+        self.app_config: RefactoredConfig = self.config_manager.config
 
-        # Load prompts and tools
-        # self.prompt_loader = PromptLoader(self.app_config) # Old incorrect line
-        # print("ConclaveEnv.__init__: Initializing PromptLoader...") # DEBUG PRINT
-        # Construct path to prompts.yaml within the conclave/prompting directory
         prompts_file_path = Path(__file__).parent.parent / "prompting" / "prompts.yaml"
-        # print(f"ConclaveEnv.__init__: Prompts file path: {prompts_file_path.resolve()}") # DEBUG PRINT
-        self.prompt_loader = PromptLoader(str(prompts_file_path.resolve())) # Pass the correct path string
-        # print("ConclaveEnv.__init__: PromptLoader initialized.") # DEBUG PRINT
+        self.prompt_loader = PromptLoader(str(prompts_file_path.resolve()))
         
-        # print("ConclaveEnv.__init__: Initializing UnifiedPromptVariableGenerator...") # DEBUG PRINT
-        self.prompt_variable_generator = UnifiedPromptVariableGenerator(self, self.prompt_loader) # Pass self (env) and prompt_loader
-        # print("ConclaveEnv.__init__: UnifiedPromptVariableGenerator initialized.") # DEBUG PRINT
+        self.prompt_variable_generator = UnifiedPromptVariableGenerator(self, self.prompt_loader)
 
-        # LLM Client for Environment-level tool calls (e.g., discussion analyzer)
-        # This uses the same shared manager as agents but gets its own client instance if needed.
-        # Typically, environment tasks might use a specific configuration or even a different model.
-        # For now, we assume it can use a similar setup. Consider a separate config if distinct behavior is needed.
         try:
-            # Use centralized LLM client management for environment tasks
             self.env_llm_client = get_llm_client("environment")
-            self.env_tool_caller = SimplifiedToolCaller(self.env_llm_client, logger) # Use environment's logger
+            self.env_tool_caller = SimplifiedToolCaller(self.env_llm_client, logger)
             logger.info(f"ConclaveEnv initialized its own LLM client: {self.env_llm_client.model_name} for environment tasks.")
         except Exception as e:
             logger.error(f"Failed to initialize LLM client for ConclaveEnv: {e}")
             self.env_llm_client = None
             self.env_tool_caller = None
 
-        # Extract relevant config sections for easier access
-        # print("ConclaveEnv.__init__: Extracting config sections...") # DEBUG PRINT
-        self.agent_config = self.app_config.agent
+        self.agent_config = self.app_config.models
         self.simulation_config = self.app_config.simulation
         self.output_config = self.app_config.output
 
-        # Default number of speaking turns per agent within one run_discussion_round phase.
-        # This can be made configurable later if multi-turn discussions before analysis are needed.
-        # self.num_discussion_turns = 1 # REMOVED - simplifying to one round of speaking
-        # logger.debug(f"ConclaveEnv initialized") # Simpler log
-        logger.debug(f"ConclaveEnv initialized with app_config: {self.app_config.model_dump_json(indent=2)}") # More detailed log
+        logger.debug(f"ConclaveEnv initialized with app_config: {self.app_config.model_dump_json(indent=2)}")
 
-        self.num_agents = self.simulation_config.num_cardinals # Override num_agents from constructor
+        self.num_agents = self.config_manager.get_num_cardinals()
         self.discussion_group_size = self.simulation_config.discussion_group_size
         self.max_election_rounds = self.simulation_config.max_election_rounds
         self.min_discussion_words = self.simulation_config.discussion_length.min_words
@@ -102,74 +76,103 @@ class ConclaveEnv:
 
         # Initialize network manager for grouping
         self.network_manager = NetworkManager(self.config_manager)
-
-        # Testing groups configuration (if enabled)
-        if self.app_config.testing_groups and self.app_config.testing_groups.enabled:
-            self.testing_groups_enabled = True # Explicitly set
-            self.active_testing_group_name = self.app_config.testing_groups.active_group
-            # Directly access the active group's settings
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-
-            # Override simulation parameters if a testing group is active
-            self.num_agents = active_group_details.override_settings.num_cardinals
-            self.discussion_group_size = active_group_details.override_settings.discussion_group_size
-            self.max_election_rounds = active_group_details.override_settings.max_election_rounds
-            self.supermajority_threshold = active_group_details.override_settings.supermajority_threshold
-            self.enable_parallel_processing = active_group_details.override_settings.enable_parallel_processing
-            logger.info(f"RUNNING WITH TESTING GROUP: {self.active_testing_group_name}")
-            logger.info(f"  Num Cardinals: {self.num_agents}")
-            logger.info(f"  Discussion Group Size: {self.discussion_group_size}")
-            logger.info(f"  Max Election Rounds: {self.max_election_rounds}")
-            logger.info(f"  Supermajority Threshold: {self.supermajority_threshold}")
-        else:
-            self.testing_groups_enabled = False
-        # print("ConclaveEnv.__init__: Testing groups configuration processed.") # DEBUG PRINT
-
-        # Initialize agents
-        # print("ConclaveEnv.__init__: Calling _initialize_agents...") # DEBUG PRINT
-        self.agents = self._initialize_agents()
-        # print("ConclaveEnv.__init__: _initialize_agents DONE.") # DEBUG PRINT
         
-        # Initialize network after agents are loaded
+        # Initialize BreakoutScheduler (will be set up when agents are created)
+        self.breakout_scheduler = None
+
+        # Predefined groups configuration (if enabled)
+        if self.app_config.groups and self.app_config.groups.active:
+            self.predefined_groups_enabled = True
+            self.active_group_name = self.app_config.groups.active
+            
+            # Load the actual group data from groups.yaml using the active group from current config
+            try:
+                # Load groups data directly from the original project location
+                # (groups.yaml is not copied to output directory)
+                project_root = Path(__file__).parent.parent.parent
+                groups_file_path = project_root / "config" / "groups.yaml"
+                
+                if groups_file_path.exists():
+                    with open(groups_file_path, 'r') as f:
+                        import yaml
+                        groups_data = yaml.safe_load(f)
+                    
+                    active_group_config = groups_data["predefined_groups"].get(self.active_group_name)
+                else:
+                    raise FileNotFoundError(f"Groups file not found: {groups_file_path}")
+                
+                if active_group_config:
+                    # Override simulation parameters if a predefined group is active
+                    self.num_agents = active_group_config['total_cardinals']
+                    # Apply simulation settings overrides if they exist
+                    if 'override_settings' in active_group_config:
+                        override_settings = active_group_config['override_settings']
+                        self.discussion_group_size = override_settings.get('discussion_group_size', self.discussion_group_size)
+                        self.max_election_rounds = override_settings.get('max_election_rounds', self.max_election_rounds) 
+                        self.supermajority_threshold = override_settings.get('supermajority_threshold', self.supermajority_threshold)
+                    
+                    logger.info(f"RUNNING WITH PREDEFINED GROUP: {self.active_group_name}")
+                    logger.info(f"  Num Cardinals: {self.num_agents}")
+                    logger.info(f"  Discussion Group Size: {self.discussion_group_size}")
+                    logger.info(f"  Max Election Rounds: {self.max_election_rounds}")
+                    logger.info(f"  Supermajority Threshold: {self.supermajority_threshold}")
+                else:
+                    logger.error(f"Active group '{self.active_group_name}' not found in predefined groups")
+                    self.predefined_groups_enabled = False
+            except FileNotFoundError:
+                logger.error(f"Groups file not found, disabling predefined groups")
+                self.predefined_groups_enabled = False
+        else:
+            self.predefined_groups_enabled = False
+
+        self.agents = self._initialize_agents()
+        
         self.network_manager.initialize_network(self.agents)
         
-        # print("ConclaveEnv.__init__ FINISHED") # DEBUG PRINT
+        self._initialize_breakout_scheduler()
 
     def _initialize_agents(self) -> List[Agent]:
-        # print("ConclaveEnv._initialize_agents STARTED") # DEBUG PRINT
         """Load agents based on testing groups configuration or all agents in normal mode."""
-        # Read cardinals from the master CSV file
-        # Ensure the path is correct, relative to the project root
-        # print("ConclaveEnv._initialize_agents: Determining project root...") # DEBUG PRINT
         project_root = Path(__file__).parent.parent.parent 
         cardinals_data_path = project_root / "data" / "cardinals_master_data.csv"
-        # print(f"ConclaveEnv._initialize_agents: Cardinals data path: {cardinals_data_path}") # DEBUG PRINT
         master_df = pd.read_csv(cardinals_data_path)
-        # print(f"ConclaveEnv._initialize_agents: Successfully read CSV. Shape: {master_df.shape}") # DEBUG PRINT
         
-        loaded_agents = [] # Temporary list to hold loaded agents
+        loaded_agents = []
 
-        if self.testing_groups_enabled:
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-            cardinal_ids_for_group = active_group_details.cardinal_ids
-            # print(f"ConclaveEnv._initialize_agents: Testing groups enabled. Group: {self.active_testing_group_name}, Cardinal IDs: {cardinal_ids_for_group}") # DEBUG PRINT
-            logger.info(f"Loading testing group '{self.active_testing_group_name}' with {len(cardinal_ids_for_group)} cardinals: {cardinal_ids_for_group}")
-            
-            # Filter dataframe to only include cardinals in the testing group
-            master_df_filtered = master_df[master_df['Cardinal_ID'].isin(cardinal_ids_for_group)]
-            
-            if len(master_df_filtered) != len(cardinal_ids_for_group):
-                loaded_ids_from_csv = set(master_df_filtered['Cardinal_ID'].tolist())
-                missing_ids = set(cardinal_ids_for_group) - loaded_ids_from_csv
-                if missing_ids:
-                    logger.warning(f"Some cardinal IDs for testing group '{self.active_testing_group_name}' not found in CSV: {missing_ids}")
-            master_df_to_load = master_df_filtered
+        if self.predefined_groups_enabled:
+            try:
+                # Always load groups.yaml from the project root, not from output directory
+                project_root = Path(__file__).parent.parent.parent
+                groups_file_path = project_root / "config" / "groups.yaml"
+                
+                with open(groups_file_path, 'r') as f:
+                    import yaml
+                    groups_data = yaml.safe_load(f)
+                    
+                active_group_config = groups_data["predefined_groups"].get(self.active_group_name)
+                
+                if active_group_config:
+                    cardinal_ids_for_group = active_group_config['cardinal_ids']
+                    logger.info(f"Loading predefined group '{self.active_group_name}' with {len(cardinal_ids_for_group)} cardinals: {cardinal_ids_for_group}")
+                    
+                    # Filter dataframe to only include cardinals in the predefined group
+                    master_df_filtered = master_df[master_df['Cardinal_ID'].isin(cardinal_ids_for_group)]
+                    
+                    if len(master_df_filtered) != len(cardinal_ids_for_group):
+                        loaded_ids_from_csv = set(master_df_filtered['Cardinal_ID'].tolist())
+                        missing_ids = set(cardinal_ids_for_group) - loaded_ids_from_csv
+                        if missing_ids:
+                            logger.warning(f"Some cardinal IDs for predefined group '{self.active_group_name}' not found in CSV: {missing_ids}")
+                    master_df_to_load = master_df_filtered
+                else:
+                    logger.error(f"Active group '{self.active_group_name}' not found in groups data")
+                    master_df_to_load = master_df.head(self.num_agents)  # Fallback
+            except FileNotFoundError:
+                logger.error(f"Groups file not found, falling back to default agent loading")
+                master_df_to_load = master_df.head(self.num_agents)  # Fallback
         else:
-            # In normal mode, use num_agents from simulation_config (which might have been overridden by testing group if it was active initially but then disabled, so re-check)
-            num_to_load = self.simulation_config.num_cardinals 
-            if self.app_config.testing_groups and self.app_config.testing_groups.enabled: # If testing groups are somehow re-enabled, defer to that
-                active_group_details = getattr(self.app_config.testing_groups, self.app_config.testing_groups.active_group)
-                num_to_load = active_group_details.override_settings.num_cardinals
+            # In normal mode, use num_agents from config manager
+            num_to_load = self.config_manager.get_num_cardinals() 
 
             if num_to_load and num_to_load < len(master_df):
                 master_df_to_load = master_df.head(num_to_load)
@@ -177,80 +180,83 @@ class ConclaveEnv:
             else:
                 master_df_to_load = master_df
                 logger.info(f"Loading all {len(master_df_to_load)} cardinals from CSV.")
-        # print(f"ConclaveEnv._initialize_agents: master_df_to_load shape: {master_df_to_load.shape}") # DEBUG PRINT
 
-        # Create Agent instances and add them to env.agents
-        # print("ConclaveEnv._initialize_agents: Starting agent creation loop...") # DEBUG PRINT
         for list_index, (idx, row) in enumerate(master_df_to_load.iterrows()):
-            # if list_index == 0: # DEBUG PRINT for first agent
-                # print(f"ConclaveEnv._initialize_agents: Creating first agent (list_index=0): {row['Name']}") # DEBUG PRINT
-            # Get all available prompts and tools for the agent
-            # available_prompts = self.prompt_loader.get_all_prompts() # Not passed to Agent constructor
-            # available_tools = list(self.prompt_loader.prompts_config.tool_definitions.values()) if self.prompt_loader.prompts_config else [] # Not passed to Agent constructor
-
             agent = Agent(
-                agent_id=list_index,  # Use list index as agent_id for consistent indexing
+                agent_id=list_index,
                 name=row['Name'],
-                conclave_env=self, # Pass the environment instance
-                personality=row.get('Internal_Persona', ''), # Assuming Internal_Persona maps to personality
-                initial_stance=row.get('Public_Profile', ''), # Assuming Public_Profile maps to initial_stance
-                party_loyalty=0.5 # Placeholder, needs to be sourced or defined
+                conclave_env=self,
+                personality=row.get('Internal_Persona', ''),
+                initial_stance=row.get('Public_Profile', ''),
+                party_loyalty=0.5
             )
-            # Set CSV-specific attributes, including cardinal_id which is crucial for mapping
-            agent.cardinal_id = row['Cardinal_ID'] # Ensure cardinal_id is set directly for mapping
-            agent.background_csv = row['Background'] # Store Background from CSV
+            agent.cardinal_id = row['Cardinal_ID']
+            agent.background_csv = row['Background']
             agent.internal_persona_csv = row.get('Internal_Persona', '')
             agent.public_profile_csv = row.get('Public_Profile', '')
             agent.profile_blurb_csv = row.get('Persona_Tag', '')
             agent.persona_tag_csv = row.get('Persona_Tag', '')
 
             loaded_agents.append(agent)
-        # print(f"ConclaveEnv._initialize_agents: Agent creation loop finished. {len(loaded_agents)} agents loaded.") # DEBUG PRINT
         
-        # Update self.num_agents to reflect the actual number of loaded agents
         self.num_agents = len(loaded_agents)
-        # print(f"ConclaveEnv._initialize_agents: self.num_agents updated to {self.num_agents}") # DEBUG PRINT
 
-        # Update candidate_ids to use list indices if testing groups are enabled
-        if self.testing_groups_enabled:
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-            original_candidate_ids_for_group = active_group_details.candidate_ids
-            # print(f"ConclaveEnv._initialize_agents: Mapping candidate IDs for testing group. Original: {original_candidate_ids_for_group}") # DEBUG PRINT
-            
-            # Create a mapping from Cardinal_ID to the list_index of the loaded agents
-            # Corrected to use agent.cardinal_id which is now set directly
-            cardinal_id_to_index_map = {agent.cardinal_id: agent.agent_id for agent in loaded_agents}
-            
-            self.candidate_ids = [cardinal_id_to_index_map[cid] for cid in original_candidate_ids_for_group if cid in cardinal_id_to_index_map]
-            
-            if len(self.candidate_ids) != len(original_candidate_ids_for_group):
-                logger.warning(
-                    f"Mismatch in candidate mapping for testing group '{self.active_testing_group_name}'. "
-                    f"Original: {original_candidate_ids_for_group}, Mapped: {self.candidate_ids}. "
-                    f"This might happen if some candidate Cardinal_IDs were not found or loaded."
-                )
-            logger.info(f"Mapped candidate Cardinal_IDs {original_candidate_ids_for_group} to agent_ids {self.candidate_ids} for testing group '{self.active_testing_group_name}'.")
+        if self.predefined_groups_enabled:
+            try:
+                # Get active group config using the current config object (handles CLI overrides)
+                # Always load groups.yaml from the project root, not from output directory
+                project_root = Path(__file__).parent.parent.parent
+                groups_file_path = project_root / "config" / "groups.yaml"
+                
+                with open(groups_file_path, 'r') as f:
+                    import yaml
+                    groups_data = yaml.safe_load(f)
+                    
+                active_group_config = groups_data["predefined_groups"].get(self.active_group_name)
+                
+                if active_group_config:
+                    original_candidate_ids_for_group = active_group_config['candidate_ids']
+                    
+                    # Create a mapping from Cardinal_ID to agent_id (list_index)
+                    cardinal_id_to_agent_id_map = {int(row['Cardinal_ID']): list_idx for list_idx, (_, row) in enumerate(master_df_to_load.iterrows())}
+                    
+                    self.candidate_ids = [cardinal_id_to_agent_id_map[cid] for cid in original_candidate_ids_for_group if cid in cardinal_id_to_agent_id_map]
+                    
+                    if len(self.candidate_ids) != len(original_candidate_ids_for_group):
+                        missing_candidates = set(original_candidate_ids_for_group) - set(cardinal_id_to_agent_id_map.keys())
+                        logger.warning(
+                            f"Some candidate Cardinal_IDs for predefined group '{self.active_group_name}' were not loaded: {missing_candidates}. "
+                            f"Available candidates (agent_ids): {self.candidate_ids}"
+                        )
+                    logger.info(f"Mapped candidate Cardinal_IDs {original_candidate_ids_for_group} to agent_ids {self.candidate_ids} for predefined group '{self.active_group_name}'.")
+                else:
+                    # Fallback if group config not found
+                    num_candidates = min(2, len(loaded_agents))
+                    self.candidate_ids = list(range(num_candidates))
+                    logger.warning(f"Could not load candidate mapping for group '{self.active_group_name}', using default: {self.candidate_ids}")
+            except FileNotFoundError:
+                # Fallback if groups file not found
+                num_candidates = min(2, len(loaded_agents))
+                self.candidate_ids = list(range(num_candidates))
+                logger.warning(f"Groups file not found, using default candidate mapping: {self.candidate_ids}")
         else:
-            self.candidate_ids = list(range(self.num_agents)) # All loaded agents are potential candidates
-        # print(f"ConclaveEnv._initialize_agents: Candidate IDs set: {self.candidate_ids}") # DEBUG PRINT
+            self.candidate_ids = list(range(self.num_agents))
 
         logger.info(f"Successfully loaded {self.num_agents} agents.")
-        if self.testing_groups_enabled:
-            logger.info(f"Testing group \'{self.active_testing_group_name}\' active. Candidate agent_ids: {self.candidate_ids}")
-            # logger.info(f"Testing group setup:\\\\n{self.get_candidates_description()}") # get_candidates_description needs to be adapted or removed
-        # print("ConclaveEnv._initialize_agents FINISHED") # DEBUG PRINT
+        if self.predefined_groups_enabled:
+            logger.info(f"Predefined group '{self.active_group_name}' active. Candidate agent_ids: {self.candidate_ids}")
         return loaded_agents
 
     def freeze_agent_count(self):
         """Freeze the agent count to match the loaded roster. Call after loading all agents."""
         self.num_agents = len(self.agents)
 
-    # Testing groups candidate/elector helper methods
+    # Predefined groups candidate/elector helper methods
     def is_candidate(self, agent_id: int) -> bool:
-        """Check if an agent is a candidate in testing groups mode."""
-        if not self.testing_groups_enabled:
+        """Check if an agent is a candidate in predefined groups mode."""
+        if not self.predefined_groups_enabled:
             return True  # In normal mode, all agents can be candidates
-        return agent_id in self.candidate_ids # self.candidate_ids stores agent_id (index)
+        return agent_id in self.candidate_ids
 
     def get_candidates_list(self) -> List[int]:
         """Get list of candidate agent IDs."""
@@ -389,6 +395,9 @@ class ConclaveEnv:
         logger.info(f"Starting Discussion Phase {self.discussionRound} for ER {self.votingRound} with {self.num_discussion_groups} discussion groups.") # Use ER
 
         current_discussion_groups = self._generate_discussion_group_assignments()
+        
+        # Store the discussion groups for reflection phase
+        self._last_discussion_groups = current_discussion_groups
         
         all_comments_for_phase: List[Dict[str, Any]] = [] 
 
@@ -541,79 +550,121 @@ class ConclaveEnv:
         # Results are in self.group_discussion_analyses
 
     def _generate_discussion_group_assignments(self) -> List[List[int]]:
-        logger.debug("Entering _generate_discussion_group_assignments")
+        """Generate discussion groups using BreakoutScheduler."""
+        logger.debug("Generating discussion groups with BreakoutScheduler")
         
-        # Get grouping configuration
-        grouping_config = self.simulation_config.grouping if hasattr(self.simulation_config, 'grouping') else {}
+        # Ensure BreakoutScheduler is initialized
+        if self.breakout_scheduler is None:
+            logger.warning("BreakoutScheduler not initialized, initializing now")
+            self._initialize_breakout_scheduler()
         
-        # Override with testing group config if active
-        if self.testing_groups_enabled:
-            active_group_details = getattr(self.app_config.testing_groups, self.active_testing_group_name)
-            if hasattr(active_group_details.override_settings, 'grouping'):
-                grouping_config = active_group_details.override_settings.grouping
-                logger.info(f"Using testing group '{self.active_testing_group_name}' grouping configuration")
-        
-        # Use network manager to generate groups
-        try:
-            # Pass the Pydantic model directly to the network manager
-            groups = self.network_manager.generate_groups(grouping_config, self.agents)
-            
-            if not groups:
-                logger.warning("Network manager returned no groups, falling back to simple random grouping")
-                groups = self._generate_fallback_groups()
-            
-            # Log group assignment summary
-            summary = self.network_manager.get_group_summary()
-            logger.info(f"Generated {summary['total_groups']} discussion groups:")
-            logger.info(f"  Total agents: {summary['total_agents']}")
-            logger.info(f"  Group sizes: {summary['group_sizes']}")
-            logger.info(f"  Average group size: {summary['avg_group_size']:.1f}")
-            
-            # Store for reference
-            self._last_discussion_groups = groups
-            
-            return groups
-            
-        except Exception as e:
-            logger.error(f"Error generating network-based groups: {e}")
-            logger.warning("Falling back to simple random grouping")
-            return self._generate_fallback_groups()
-
-    def _generate_fallback_groups(self) -> List[List[int]]:
-        """Generate simple fallback groups when network grouping fails."""
-        discussion_group_size = self.discussion_group_size
-        
-        if discussion_group_size < 2:
-            logger.warning(
-                f"Configured 'discussion_group_size' ({discussion_group_size}) is less than 2. "
-                f"Adjusting to 2 for discussion group formation."
-            )
-            discussion_group_size = 2
-
-        agent_ids = list(range(len(self.agents)))
-        if not agent_ids:
-            logger.warning("No agents available to form discussion groups.")
-            self._last_discussion_groups = []
+        if self.breakout_scheduler is None:
+            logger.error("Failed to initialize BreakoutScheduler, cannot generate groups")
             return []
-            
-        random.shuffle(agent_ids)
-
-        groups = []
-        i = 0
-        num_total_agents = len(agent_ids)
-        while i < num_total_agents:
-            groups.append(agent_ids[i : i + discussion_group_size])
-            i += discussion_group_size
-
-        # Avoid singleton groups
-        if len(groups) > 1 and len(groups[-1]) == 1:
-            if len(groups[-2]) > 0: 
-                element_to_move = groups[-2].pop()
-                groups[-1].insert(0, element_to_move)
         
-        groups = [g for g in groups if g]
-        logger.debug(f"Generated fallback discussion groups: {groups}")
-        return groups
+        # Generate groups for this round using BreakoutScheduler
+        cardinal_groups = self.breakout_scheduler.next_round()
+        
+        # Convert cardinal_id groups to agent_id groups
+        agent_groups = []
+        assigned_agent_ids = set()
+        
+        for i, cardinal_group in enumerate(cardinal_groups):
+            agent_group = []
+            missing_cardinals = []
+            for cardinal_id in cardinal_group:
+                if cardinal_id in self.network_manager.cardinal_id_to_agent_id_map:
+                    agent_id = self.network_manager.cardinal_id_to_agent_id_map[cardinal_id]
+                    agent_group.append(agent_id)
+                    assigned_agent_ids.add(agent_id)
+                else:
+                    missing_cardinals.append(cardinal_id)
+            
+            if missing_cardinals:
+                logger.warning(f"Group {i+1}: Cardinals {missing_cardinals} not found in cardinal_id_to_agent_id_map")
+            
+            if agent_group:  # Only add non-empty groups
+                agent_groups.append(agent_group)
+        
+        # Check for unassigned agents and create fallback groups
+        all_agent_ids = set(range(len(self.agents)))
+        unassigned_agent_ids = all_agent_ids - assigned_agent_ids
+        
+        if unassigned_agent_ids:
+            logger.warning(f"Agents {sorted(unassigned_agent_ids)} not assigned to any group by BreakoutScheduler")
+            # Create additional groups for unassigned agents
+            unassigned_list = list(unassigned_agent_ids)
+            # Use discussion_group_size for consistency
+            for i in range(0, len(unassigned_list), self.discussion_group_size):
+                fallback_group = unassigned_list[i:i + self.discussion_group_size]
+                agent_groups.append(fallback_group)
+                logger.info(f"Created fallback group: {fallback_group}")
+        
+        logger.info(f"BreakoutScheduler generated {len(agent_groups)} groups for round {self.breakout_scheduler._round}")
+        for i, group in enumerate(agent_groups):
+            logger.info(f"  Group {i+1}: {len(group)} members")
+        
+        return agent_groups
+
+    def _initialize_breakout_scheduler(self):
+        """Initialize the BreakoutScheduler with the bocconi network."""
+        import pickle
+        import os
+        from conclave.network.breakout_scheduler import BreakoutScheduler
+        
+        # Load the bocconi graph
+        project_root = Path(__file__).parent.parent.parent
+        graph_path = project_root / "data" / "network" / "bocconi_graph.gpickle"
+        
+        with open(graph_path, 'rb') as f:
+            G_multiplex = pickle.load(f)
+        
+        logger.info(f"Loaded bocconi network with {len(G_multiplex.nodes)} nodes")
+        
+        # Initialize the network manager mappings
+        self.network_manager.initialize_network(self.agents)
+        
+        # Get the cardinal_ids that are actually in the simulation
+        simulation_cardinal_ids = set()
+        for agent in self.agents:
+            if hasattr(agent, 'cardinal_id') and agent.cardinal_id is not None:
+                simulation_cardinal_ids.add(agent.cardinal_id)
+        
+        logger.info(f"Simulation has {len(simulation_cardinal_ids)} cardinals")
+        
+        # Create subgraph with only cardinals from the simulation
+        available_cardinal_ids = simulation_cardinal_ids.intersection(set(G_multiplex.nodes()))
+        
+        if len(available_cardinal_ids) == 0:
+            logger.error("No cardinal IDs from simulation found in network!")
+            self.breakout_scheduler = None
+            return
+            
+        G_simulation = G_multiplex.subgraph(available_cardinal_ids).copy()
+        logger.info(f"Created simulation subgraph with {len(G_simulation.nodes)} nodes and {len(G_simulation.edges)} edges")
+        
+        missing_simulation_cardinals = simulation_cardinal_ids - set(G_multiplex.nodes())
+        if missing_simulation_cardinals:
+            logger.warning(f"Cardinals in simulation but not in network: {missing_simulation_cardinals}")
+        
+        # Create BreakoutScheduler with the filtered network
+        grouping_config = self.simulation_config.grouping
+        weights = (
+            grouping_config.utility_weights.connection,
+            grouping_config.utility_weights.ideology,
+            grouping_config.utility_weights.influence,
+            grouping_config.utility_weights.interaction
+        )
+        
+        self.breakout_scheduler = BreakoutScheduler(
+            G_simulation, 
+            room_size=self.discussion_group_size,  # Use discussion_group_size consistently
+            rationality=self.app_config.simulation.rationality,  # Use simulation rationality
+            penalty_weight=grouping_config.penalty_weight,
+            weights=weights
+        )
+        
+        logger.info("BreakoutScheduler initialized successfully")
 
     def _analyze_single_group_discussion(self, group_idx: int, group_agent_ids: List[int], group_transcript_comments: List[Dict[str, Any]]):
         """Analyzes a single group's discussion transcript and stores the result."""
@@ -933,7 +984,8 @@ class ConclaveEnv:
             logger.info("No voters participated in this round. Cannot determine supermajority.")
             # Handle case with no voters - perhaps no winner or specific logic
         else:
-            votes_needed_for_supermajority = np.ceil(self.supermajority_threshold * num_voters_this_round)
+            # Use the same calculation as in prompts: int(total_electors * threshold)
+            votes_needed_for_supermajority = int(self.supermajority_threshold * num_voters_this_round)
             logger.info(f"Supermajority threshold: {self.supermajority_threshold * 100}%. Votes needed: {votes_needed_for_supermajority} out of {num_voters_this_round} voters this round.")
             
             # ADDED: Debug logging for winner determination
@@ -978,3 +1030,303 @@ class ConclaveEnv:
         if 0 <= agent_id < len(self.agents):
             return self.agents[agent_id]
         return None
+
+    def save_simulation_results(self, output_dir: Path, timestamp: str) -> None:
+        """
+        Save comprehensive simulation results including individual votes, embeddings, and enhanced summary.
+        
+        Args:
+            output_dir: Base output directory for the simulation
+            timestamp: Simulation timestamp for file naming
+        """
+        results_dir = output_dir / "results"
+        results_dir.mkdir(exist_ok=True)
+        
+        logger.info("Saving comprehensive simulation results...")
+        
+        # Save enhanced simulation summary
+        self._save_enhanced_simulation_summary(results_dir, timestamp)
+        
+        # Save individual voting data
+        self._save_individual_voting_data(results_dir)
+        
+        # Save stance embeddings
+        self._save_stance_embeddings(results_dir)
+        
+        # Save final round vote summary
+        self._save_final_round_votes(results_dir)
+        
+        logger.info("Simulation results saved successfully")
+    
+    def _save_enhanced_simulation_summary(self, results_dir: Path, timestamp: str) -> None:
+        """Save enhanced simulation summary with additional metadata."""
+        import json
+        
+        # Calculate additional statistics
+        total_agents = len(self.agents)
+        total_rounds = len(self.votingHistory)
+        
+        # Count agents with embeddings
+        agents_with_embeddings = sum(1 for agent in self.agents 
+                                   if hasattr(agent, 'embedding_history') and agent.embedding_history)
+        
+        # Count discussion participation
+        total_discussions = len(self.discussionHistory)
+        discussion_participation = {}
+        for round_idx, round_comments in enumerate(self.discussionHistory):
+            round_participants = set()
+            for comment in round_comments:
+                if isinstance(comment.get('agent_id'), int):
+                    round_participants.add(comment['agent_id'])
+            discussion_participation[f"round_{round_idx + 1}"] = len(round_participants)
+        
+        # Enhanced simulation summary
+        enhanced_summary = {
+            "metadata": {
+                "timestamp": timestamp,
+                "simulation_type": "multi_round_discussion",
+                "version": "1.0"
+            },
+            "simulation_settings": {
+                "num_agents": total_agents,
+                "discussion_group_size": self.discussion_group_size,
+                "max_election_rounds": self.max_election_rounds,
+                "supermajority_threshold": self.supermajority_threshold,
+                "parallel_processing_enabled": self.enable_parallel_processing
+            },
+            "results": {
+                "winner_cardinal_id": self.winner,
+                "winner_name": self.agents[self.winner].name if self.winner is not None else "N/A",
+                "total_election_rounds": total_rounds,
+                "winner_found": self.winner is not None,
+                "final_vote_threshold_met": self._check_final_threshold() if self.winner is not None else False
+            },
+            "participation_stats": {
+                "total_agents": total_agents,
+                "agents_with_embeddings": agents_with_embeddings,
+                "discussion_rounds_held": total_discussions,
+                "discussion_participation_by_round": discussion_participation,
+                "voting_rounds_held": total_rounds
+            },
+            "predefined_groups": {
+                "enabled": self.predefined_groups_enabled,
+                "active_group": self.active_group_name if self.predefined_groups_enabled else None,
+                "candidate_agent_ids": self.candidate_ids if self.predefined_groups_enabled else None
+            }
+        }
+        
+        summary_file = results_dir / "simulation_summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump(enhanced_summary, f, indent=4)
+        
+        logger.info(f"Enhanced simulation summary saved to {summary_file}")
+    
+    def _save_individual_voting_data(self, results_dir: Path) -> None:
+        """Save detailed individual voting data for each round."""
+        import json
+        
+        # Convert individual votes history to a more readable format
+        voting_data = {}
+        
+        for round_idx, round_votes in enumerate(self.individual_votes_history):
+            round_key = f"round_{round_idx + 1}"
+            voting_data[round_key] = {}
+            
+            for voter_agent_id, candidate_agent_id in round_votes.items():
+                # Get names and cardinal IDs for readability
+                voter_name = self.agents[voter_agent_id].name if voter_agent_id < len(self.agents) else f"Agent_{voter_agent_id}"
+                voter_cardinal_id = getattr(self.agents[voter_agent_id], 'cardinal_id', voter_agent_id) if voter_agent_id < len(self.agents) else voter_agent_id
+                
+                candidate_name = self.agents[candidate_agent_id].name if candidate_agent_id < len(self.agents) else f"Agent_{candidate_agent_id}"
+                candidate_cardinal_id = getattr(self.agents[candidate_agent_id], 'cardinal_id', candidate_agent_id) if candidate_agent_id < len(self.agents) else candidate_agent_id
+                
+                voting_data[round_key][str(voter_cardinal_id)] = {
+                    "candidate_cardinal_id": candidate_cardinal_id,
+                    "voter_name": voter_name,
+                    "candidate_name": candidate_name,
+                    "voter_agent_id": voter_agent_id,
+                    "candidate_agent_id": candidate_agent_id
+                }
+        
+        votes_file = results_dir / "individual_votes_by_round.json"
+        with open(votes_file, 'w') as f:
+            json.dump(voting_data, f, indent=4)
+        
+        logger.info(f"Individual voting data saved to {votes_file}")
+        
+        # Also save in flat CSV format for analysis
+        csv_data = []
+        for round_key, round_votes in voting_data.items():
+            round_num = int(round_key.split('_')[1])  # Extract number from "round_1"
+            
+            for cardinal_id, vote_info in round_votes.items():
+                csv_data.append({
+                    'round': round_num,
+                    'agent_id': vote_info['voter_agent_id'],
+                    'agent_name': vote_info['voter_name'],
+                    'cardinal_id': int(cardinal_id),
+                    'candidate_voted_for': vote_info['candidate_name'],
+                    'candidate_cardinal_id': vote_info['candidate_cardinal_id'],
+                    'candidate_agent_id': vote_info['candidate_agent_id']
+                })
+        
+        if csv_data:
+            import pandas as pd
+            df = pd.DataFrame(csv_data)
+            csv_file = results_dir / "voting_data.csv"
+            df.to_csv(csv_file, index=False)
+            logger.info(f"Flat voting data saved to {csv_file}")
+        else:
+            logger.warning("No voting data to save in CSV format")
+    
+    def _save_stance_embeddings(self, results_dir: Path) -> None:
+        """Save stance embeddings for all rounds in efficient format."""
+        import json
+        import numpy as np
+        
+        # Collect all embeddings and metadata
+        embedding_data = {}
+        metadata = {
+            "rounds": [],
+            "agents": [],
+            "embedding_dimension": None,
+            "model_used": None
+        }
+        
+        # Get embedding client info
+        try:
+            from ..embeddings import get_default_client
+            embedding_client = get_default_client()
+            stats = embedding_client.get_embedding_stats()
+            metadata["model_used"] = stats.get("model_name", "unknown")
+            metadata["embedding_dimension"] = stats.get("embedding_dimension", None)
+        except Exception as e:
+            logger.warning(f"Could not get embedding client stats: {e}")
+            metadata["model_used"] = "unknown"
+            metadata["embedding_dimension"] = None
+        
+        # Collect agent metadata
+        for agent in self.agents:
+            agent_info = {
+                "agent_id": agent.agent_id,
+                "name": agent.name,
+                "cardinal_id": getattr(agent, 'cardinal_id', agent.agent_id)
+            }
+            metadata["agents"].append(agent_info)
+        
+        # Collect embeddings by round
+        all_rounds = set()
+        for agent in self.agents:
+            if hasattr(agent, 'embedding_history') and agent.embedding_history:
+                all_rounds.update(agent.embedding_history.keys())
+        
+        all_rounds = sorted(list(all_rounds), key=lambda x: (x == "initial", x))  # Sort with "initial" first
+        metadata["rounds"] = all_rounds
+        
+        for round_key in all_rounds:
+            round_embeddings = []
+            for agent in self.agents:
+                if (hasattr(agent, 'embedding_history') and 
+                    agent.embedding_history and 
+                    round_key in agent.embedding_history):
+                    round_embeddings.append(agent.embedding_history[round_key])
+                else:
+                    # Fill with zeros if agent has no embedding for this round
+                    if metadata["embedding_dimension"]:
+                        round_embeddings.append(np.zeros(metadata["embedding_dimension"]))
+                    else:
+                        round_embeddings.append(None)
+            
+            if round_embeddings and round_embeddings[0] is not None:
+                embedding_data[round_key] = np.array(round_embeddings)
+        
+        # Save embeddings as compressed numpy file
+        if embedding_data:
+            embeddings_file = results_dir / "stance_embeddings_by_round.npz"
+            np.savez_compressed(embeddings_file, **embedding_data)
+            logger.info(f"Stance embeddings saved to {embeddings_file}")
+            
+            # Also save in CSV format for analysis
+            csv_data = []
+            for round_key, round_embeddings in embedding_data.items():
+                for agent_idx, embedding in enumerate(round_embeddings):
+                    agent_info = metadata["agents"][agent_idx]
+                    row = {
+                        'round': round_key,
+                        'agent_id': agent_info['agent_id'],
+                        'agent_name': agent_info['name'],
+                        'cardinal_id': agent_info['cardinal_id']
+                    }
+                    # Add embedding dimensions as separate columns
+                    for dim_idx, value in enumerate(embedding):
+                        row[f'embedding_{dim_idx}'] = value
+                    csv_data.append(row)
+            
+            if csv_data:
+                import pandas as pd
+                df = pd.DataFrame(csv_data)
+                csv_file = results_dir / "stance_embeddings.csv"
+                df.to_csv(csv_file, index=False)
+                logger.info(f"Stance embeddings CSV saved to {csv_file}")
+        else:
+            logger.warning("No embedding data found to save")
+        
+        # Save metadata as JSON
+        metadata_file = results_dir / "stance_embeddings_metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=4)
+        
+        logger.info(f"Embedding metadata saved to {metadata_file}")
+    
+    def _save_final_round_votes(self, results_dir: Path) -> None:
+        """Save final round voting results in CSV format."""
+        import pandas as pd
+        
+        if not self.individual_votes_history:
+            logger.warning("No voting history available for final round votes")
+            return
+        
+        # Get the final round votes
+        final_round_votes = self.individual_votes_history[-1]
+        final_round_number = len(self.individual_votes_history)
+        
+        # Create DataFrame
+        vote_records = []
+        for voter_agent_id, candidate_agent_id in final_round_votes.items():
+            voter_name = self.agents[voter_agent_id].name if voter_agent_id < len(self.agents) else f"Agent_{voter_agent_id}"
+            voter_cardinal_id = getattr(self.agents[voter_agent_id], 'cardinal_id', voter_agent_id) if voter_agent_id < len(self.agents) else voter_agent_id
+            
+            candidate_name = self.agents[candidate_agent_id].name if candidate_agent_id < len(self.agents) else f"Agent_{candidate_agent_id}"
+            candidate_cardinal_id = getattr(self.agents[candidate_agent_id], 'cardinal_id', candidate_agent_id) if candidate_agent_id < len(self.agents) else candidate_agent_id
+            
+            vote_records.append({
+                'voter_name': voter_name,
+                'voter_cardinal_id': voter_cardinal_id,
+                'candidate_name': candidate_name,
+                'candidate_cardinal_id': candidate_cardinal_id,
+                'round_number': final_round_number
+            })
+        
+        if vote_records:
+            df = pd.DataFrame(vote_records)
+            csv_file = results_dir / "final_round_votes.csv"
+            df.to_csv(csv_file, index=False)
+            logger.info(f"Final round votes saved to {csv_file}")
+        else:
+            logger.warning("No final round votes to save")
+    
+    def _check_final_threshold(self) -> bool:
+        """Check if the winner met the required threshold in the final round."""
+        if not self.votingHistory or self.winner is None:
+            return False
+        
+        final_votes = self.votingHistory[-1]
+        winner_votes = final_votes.get(self.winner, 0)
+        required_votes = self._calculate_required_majority()
+        
+        return winner_votes >= required_votes
+    
+    def _calculate_required_majority(self) -> int:
+        """Calculate the required majority based on current settings."""
+        total_voting_agents = len(self.agents)
+        return int(np.ceil(total_voting_agents * self.supermajority_threshold))

@@ -1,102 +1,76 @@
-# ConclaveSim: Simulating the 2025 Papal Election with LLM Agents
+# ConclaveSim: A Multi-Agent Simulation of the Papal Election
 
-## Contents
+## Introduction
 
-- [What is This?](#what-is-this)
-- [Context: The Papal Election Process](#context-the-papal-election-process)
-  - [The Conclave System](#the-conclave-system)
-- [Experiment Setup](#experiment-setup)
-  - [1. Environment](#1-environment-conclaveenv)
-  - [2. Cardinal Agents](#2-cardinal-agents)
-  - [3. Simulation Modes](#3-simulation-modes)
-  - [4. Data Sources](#4-data-sources)
-- [Running Experiments](#running-experiments)
-- [Future work](#future-work)
+ConclaveSim is a sophisticated, multi-agent simulation framework designed to model the intricate dynamics of the papal election process. Leveraging large language models (LLMs), this project provides a unique platform for exploring the strategic interactions, discussions, and voting patterns that characterize a papal conclave. Each cardinal is represented by an autonomous agent, endowed with a distinct personality, background, and set of priorities, all derived from real-world data.
 
-## What is This?
+The simulation allows for a deep dive into the complex decision-making processes of the College of Cardinals, offering insights into how consensus is built, how factions emerge, and how a new Pope is ultimately elected. By providing a configurable and extensible environment, ConclaveSim serves as a powerful tool for researchers, historians, and anyone interested in the intersection of artificial intelligence, social dynamics, and religious studies.
 
-ConclaveSim is a simulation framework that models the papal election process using Large Language Model (LLM) agents. Each cardinal is represented by an autonomous agent powered by Claude 3.7 Sonnet, with unique backgrounds and perspectives derived from real-world data about the College of Cardinals.
+## System Architecture
 
-The simulation allows researchers and observers to explore the dynamics of papal elections by having AI agents engage in discussions and cast votes according to their simulated beliefs and priorities. The framework supports different modes of interaction including single voting rounds, multi-round elections, and discussion-based proceedings.
+ConclaveSim is built on a modular and extensible architecture, designed to facilitate experimentation and future development. The key components of the system are:
 
-## Context: The Papal Election Process
+### Core Components
 
-### The Conclave System
+*   **`ConclaveEnv`**: The central environment that orchestrates the simulation. It is responsible for managing the lifecycle of the agents, running the voting and discussion rounds, and collecting data.
+*   **`Agent`**: The fundamental unit of the simulation, representing a single cardinal. The `Agent` class is designed with a modular, mixin-based architecture, allowing for the flexible composition of behaviors such as voting, discussion, and reflection.
+*   **`LLMClientManager`**: A centralized manager for handling interactions with the LLM backend. This component ensures that all LLM clients are created and managed consistently, improving the maintainability and scalability of the system.
+*   **`UnifiedPromptVariableGenerator`**: A modular and extensible prompt generator that creates the prompts used to elicit responses from the LLM agents. This component is designed to be easily adaptable to new scenarios and prompt structures.
 
-When a Pope dies or resigns, the College of Cardinals gathers in the Sistine Chapel for a conclave to elect his successor. The term "conclave" comes from the Latin "cum clave" meaning "with a key," referring to the tradition of locking the cardinals inside until they reach a decision.
+### Data and Configuration
 
-Key aspects of the papal conclave:
+*   **`config.yaml`**: The main configuration file for the simulation. It allows for the configuration of the simulation parameters, LLM settings, and other key aspects of the environment.
+*   **`prompts.yaml`**: A file containing the prompt templates used to generate the prompts for the LLM agents.
+*   **`cardinals_master_data.csv`**: The primary data source for the simulation, containing detailed information about each cardinal, including their background, views, and priorities.
 
-1. **Participants**: Only cardinals under 80 years of age on the day the Holy See becomes vacant may vote. These cardinals are known as "cardinal electors." There are **133 cardinal electors** for the 2025 election.
+## Getting Started
 
-2. **Secrecy**: The conclave is conducted in absolute secrecy. The cardinals take an oath to maintain confidentiality about the proceedings.
+### Prerequisites
 
-3. **Voting Process**:
-   - Cardinals cast paper ballots for their preferred candidate
-   - A two-thirds supermajority is required to elect a new Pope
-   - Voting occurs in multiple rounds until a Pope is elected
-   - After each unsuccessful round, the ballots are burned with chemicals that produce black smoke
-   - When a Pope is elected, white smoke signals the decision
+*   Python 3.8 or higher
+*   `uv` (to install dependencies)
 
-4. **Discussion Periods**: Between voting sessions, cardinals engage in informal discussions where they can advocate for candidates and build consensus.
+### Installation
 
-5. **Duration**: Conclaves can last from a few days to several weeks, depending on how quickly consensus forms around a candidate.
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/your-username/ConclaveSim.git
+    cd ConclaveSim
+    ```
+2.  Install the dependencies:
+    ```bash
+    uv sync
+    ```
 
-## Experiment Setup
+### Configuration
 
-This simulation framework features several components:
+1.  Create a `config.yaml` file in the root directory of the project. You can use the `config.yaml.example` file as a template.
+2.  Configure your LLM backend in the `config.yaml` file. You can choose between a local or remote backend.
+3.  If you are using a remote backend, make sure to set your API key in the `config.yaml` file.
 
-### 1. Environment (`ConclaveEnv`)
+### Running the Simulation
 
-The central simulation environment that manages:
-- Instantiating cardinal agents
-- Executing voting rounds and tallying results
-- Executing discussion rounds where cardinals can speak
-- Recording history of voting results and discussions
+To run the simulation, you can use the `run.py` script in the `simulations` directory:
 
-### 2. Cardinal Agents
+```bash
+uv run python simulations/run.py
+```
 
-Each cardinal is represented by an LLM-powered agent with:
-- Real-world identity based on actual cardinals
-- Background information describing their views and priorities
-- Ability to vote for candidates
-- Ability to participate in discussions
-- Memory of previous votes and discussions
+The simulation results will be saved in the `simulations/outputs` directory.
 
-### 3. Simulation Modes
+## Simulation Modes
 
-The framework supports several simulation modes:
+ConclaveSim supports several simulation modes, each designed to explore different aspects of the papal election process:
 
-- **Single Round** (`single_round.py`): Runs a single voting round without discussion
-- **Multi-Round** (`multi_round.py`): Conducts multiple voting rounds until a winner is elected. The only information shared among agents is the ballot results after each round.
-- **Discussion-Based** (`discussion_round.py`): Conducts multiple voting rounds until a winner is elected.
+*   **Single Round**: A single voting round without any discussion.
+*   **Multi-Round**: Multiple voting rounds, with the results of each round being shared with the agents before the next round begins.
+*   **Discussion-Based**: Multiple voting rounds, with discussion periods between each round. During the discussion periods, the agents can interact with each other and try to build consensus.
 
-### 4. Data Sources
+## Future Work
 
-Cardinal information is sourced from:
-- `cardinal_electors_2025.csv`: Contains data on all eligible cardinal electors including their name, country, office, age, and background
-- This data is generated using `generate_cardinals_csv.py`, which scrapes Wikipedia for the elector list and enhances each cardinal's information with GPT4.1 + Web Search
+ConclaveSim is an ongoing project, and there are many opportunities for future development and improvement. Some potential areas for future work include:
 
-### Running Experiments
-
-To run a simulation:
-
-1. Install dependencies: `uv sync`
-2. Configure your LLM backend in `config.yaml`:
-   - For local models: Set `backend: "local"` and choose a model
-   - For remote models: Set `backend: "remote"`, choose a model, and set your API key
-3. Choose a simulation mode:
-   ```
-   uv run single_round.py    # For a single voting round
-   uv run multi_round.py     # For multiple voting rounds
-   uv run discussion_round.py  # For voting rounds with discussion periods
-   ```
-
-3. Results are logged to the `logs/` directory
-
-### Future work
-
-The simulation can be extended by:
-- Experimenting with different LLMs
-- Implementing different discussion or voting mechanics
-- Creating new analysis tools to interpret simulation results
+*   **Experimenting with different LLMs**: The simulation can be extended to support a wider range of LLMs, allowing for a comparative analysis of their performance.
+*   **Improving the agent models**: The agent models can be made more sophisticated by incorporating more detailed psychological and sociological models of human behavior.
+*   **Adding new simulation modes**: New simulation modes can be added to explore different aspects of the papal election process, such as the role of the media or the influence of external events.
+*   **Developing a graphical user interface**: A graphical user interface (GUI) could be developed to make the simulation more accessible to a wider audience.
