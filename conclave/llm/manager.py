@@ -9,6 +9,8 @@ import threading
 import logging
 from typing import Optional, Dict, Any
 from config.scripts import get_config  # Use new config adapter
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 
 logger = logging.getLogger("conclave.llm")
 
@@ -62,13 +64,12 @@ class LLMClientManager:
             if client_type in self._clients:
                 return self._clients[client_type]
             
-            # Create new client
+            # Create new client - FIXED: Use correct config path
             llm_config = self.config_manager.config.models.llm  # Updated path for new config structure
             
             if llm_config.backend == 'local':
-                # For local backend, use a simple mock client
-                logger.warning("Local backend not fully supported in simplified manager. Using mock client.")
-                client = self._create_mock_client()
+                logger.info("Creating local LLM client")
+                client = self._create_local_client()
             else:  # 'remote' backend
                 # Create a simple remote client inline
                 client = self._create_remote_client()
@@ -141,12 +142,76 @@ class LLMClientManager:
                 """Legacy method name for backward compatibility."""
                 return self.generate(prompt, **kwargs)
         
-        # Get configuration
+        # Get configuration - FIXED: Use correct method
         client_kwargs = self.config_manager.get_llm_client_kwargs()  # ConfigAdapter has this method directly
         model_name = client_kwargs.get("model_name", "openai/gpt-4o-mini")
         api_key = client_kwargs.get("api_key")
         
         return SimpleRemoteClient(model_name=model_name, api_key=api_key)
+    
+    def _create_local_client(self):
+        """Create a local LLM client using transformers."""
+
+        
+        class LocalLLMClient:
+            def __init__(self, model_name):
+                self.model_name = model_name
+                logger.info(f"Loading local model: {model_name}")
+                
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map="auto",
+                    torch_dtype="auto"
+                )
+                
+                # Add padding token if needed
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                
+            def generate(self, messages, **kwargs):
+                """Generate a response using the local model."""
+                # Handle different input formats
+                if isinstance(messages, str):
+                    prompt = messages
+                elif isinstance(messages, list):
+                    if len(messages) > 0 and isinstance(messages[0], dict):
+                        prompt = messages[0].get('content', str(messages))
+                    else:
+                        prompt = str(messages)
+                else:
+                    prompt = str(messages)
+                
+                # Tokenize and generate
+                inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+                
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=kwargs.get("max_tokens", 500),
+                        temperature=kwargs.get("temperature", 0.7),
+                        do_sample=True,
+                        pad_token_id=self.tokenizer.eos_token_id
+                    )
+                
+                # Decode only the new tokens
+                response = self.tokenizer.decode(
+                    outputs[0][len(inputs.input_ids[0]):], 
+                    skip_special_tokens=True
+                )
+                return response.strip()
+                
+            def generate_response(self, prompt, **kwargs):
+                """Legacy method name for backward compatibility."""
+                return self.generate(prompt, **kwargs)
+        
+        # FIXED: Get model name directly from top-level LLM config
+        llm_config = self.config_manager.config.models.llm
+        
+        # Based on your config.yaml, model_name is at the top level
+        model_name = getattr(llm_config, 'model_name', 'meta-llama/llama-3.1-8b-instruct')
+        
+        return LocalLLMClient(model_name=model_name)
     
     def _create_mock_client(self):
         """Create a mock client for testing."""

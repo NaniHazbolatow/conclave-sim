@@ -1,0 +1,36 @@
+usage: run.py [-h] [--group {small,medium,large,xlarge,full}] [--max-rounds N] [--parallel] [--no-parallel]
+              [--rationality R] [--temperature T] [--discussion-size N] [--output-dir DIR]
+              [--log-level {DEBUG,INFO,WARNING,ERROR}] [--no-viz] [--local-llm]
+
+Run Conclave Simulation
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --group {small,medium,large,xlarge,full}
+                        Active predefined group (overrides config.yaml groups.active)
+  --max-rounds N        Maximum simulation rounds (Range: 1-50)
+  --parallel            Enable parallel processing
+  --no-parallel         Disable parallel processing
+  --rationality R       Agent rationality (Range: 0.0=random to 1.0=fully rational)
+  --temperature T       LLM temperature (Range: 0.0=deterministic to 2.0=creative)
+  --discussion-size N   Number of agents per discussion group
+  --output-dir DIR      Custom output directory (default: auto-generated timestamp)
+  --log-level {DEBUG,INFO,WARNING,ERROR}
+                        Logging level (overrides config.yaml)
+  --no-viz              Disable visualization generation
+  --local-llm           Use the local LLM model instead of the remote one
+
+Examples:
+  # Run with medium group and 10 rounds
+  python run.py --group medium --max-rounds 10
+
+  # Run with custom rationality and temperature
+  python run.py --rationality 0.9 --temperature 0.5
+
+  # Run with parallel processing disabled
+  python run.py --no-parallel
+
+  # Run with custom discussion group size
+  python run.py --discussion-size 5
+
+    python run.py --group small --no-parallel

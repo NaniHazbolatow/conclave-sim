@@ -37,7 +37,7 @@ simulation:
 # LLM and model configuration
 models:
   llm:
-    backend: remote                   # Options: 'remote' | 'local'
+    backend: local                   # Options: 'remote' | 'local'
     model_name: meta-llama/llama-3.1-8b-instruct
     max_tokens: 500
     
@@ -79,7 +79,7 @@ models:
 output:
   # Logging settings
   logging:
-    log_level: INFO                   # Options: DEBUG, INFO, WARNING, ERROR
+    log_level: ERROR                   # Options: DEBUG, INFO, WARNING, ERROR
     performance_logging: true
   
   # Results saving
