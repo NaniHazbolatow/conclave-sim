@@ -18,9 +18,9 @@ class VotingVariableGenerator(BaseVariableGenerator):
     def generate_voting_variables(self, include_cardinal_id_for_visible: bool = False) -> Dict[str, Any]:
         """Generate all voting-related variables."""
         return {
-            'visible_candidates': self.generate_candidate_list(include_cardinal_id=include_cardinal_id_for_visible),
-            'candidate_list': self.generate_candidate_list(include_cardinal_id=include_cardinal_id_for_visible),
-            'viable_papabili': self.generate_candidate_list(include_cardinal_id=True, include_votes=True),
+            'visible_candidates': self.generate_candidate_list(include_cardinal_id=include_cardinal_id_for_visible, format_spec='full'),
+            'candidate_list': self.generate_candidate_list(include_cardinal_id=include_cardinal_id_for_visible, format_spec='full'),
+            'viable_papabili': self.generate_candidate_list(include_cardinal_id=True, include_votes=True, format_spec='tags'),
             'vote_tallies': self.generate_vote_tallies(),
             'voting_round': self.get_current_voting_round(),
             'total_votes_cast': self.get_total_votes_cast(),
@@ -32,7 +32,7 @@ class VotingVariableGenerator(BaseVariableGenerator):
             'visible_candidates_ids': [getattr(agent, 'cardinal_id', agent.agent_id) for agent in self.get_visible_candidate_agents()],
         }
     
-    def generate_candidate_list(self, include_cardinal_id: bool = False, include_votes: bool = False) -> str:
+    def generate_candidate_list(self, include_cardinal_id: bool = False, include_votes: bool = False, format_spec: str = 'full') -> str:
         """
         Generate a standardized candidate list.
         
@@ -49,7 +49,8 @@ class VotingVariableGenerator(BaseVariableGenerator):
             line = self.format_candidate_line(
                 agent, 
                 include_cardinal_id=include_cardinal_id,
-                include_votes=include_votes
+                include_votes=include_votes,
+                format_spec=format_spec
             )
             candidate_lines.append(line)
         

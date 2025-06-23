@@ -73,6 +73,9 @@ class PromptLoader: # Renamed from PromptManager
 
             self.prompts_config = PromptsConfig(**raw_prompts)
             logger.info(f"Prompts loaded and validated from {self.prompts_path.resolve()}")
+            # Log the keys that were successfully loaded
+            loaded_keys = list(self.prompts_config.model_dump().keys())
+            logger.debug(f"Loaded prompt keys: {loaded_keys}")
 
         except FileNotFoundError:
             logger.error(f"Prompts file not found: {self.prompts_path.resolve()}")
@@ -98,8 +101,14 @@ class PromptLoader: # Renamed from PromptManager
             The prompt template string, or None if not found.
         """
         prompt_template = getattr(self.prompts_config, prompt_name, None)
+
+        # Pydantic v2 compatibility: extra fields are in `model_extra`
+        if prompt_template is None and self.prompts_config.model_extra:
+            prompt_template = self.prompts_config.model_extra.get(prompt_name)
+
         if prompt_template is None:
-            logger.warning(f"Prompt '{prompt_name}' not found in configuration.")
+            logger.warning(f"Prompt '{prompt_name}' not found in prompts configuration.")
+        
         return prompt_template
 
     def get_prompt_template(self, prompt_name: str) -> Optional[str]:
@@ -117,7 +126,7 @@ class PromptLoader: # Renamed from PromptManager
         logger.warning(f"Prompt '{prompt_name}' not found in configuration.")
         return None
 
-    def get_tool_definition(self, tool_name: str) -> Optional[Dict]:
+    def get_tool_definition(self, tool_name: str) -> Optional[ToolDefinition]:
         """
         Retrieves a specific tool definition from the loaded prompts configuration.
 

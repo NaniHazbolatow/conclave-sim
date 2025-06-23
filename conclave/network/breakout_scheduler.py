@@ -85,27 +85,49 @@ class BreakoutScheduler:
         # Calculate shortest path distances
         dists = nx.single_source_dijkstra_path_length(costG, source, weight='cost')
         
-        utils = {}
+        # Step 1: Calculate raw component values for all potential targets
+        raw_components = {}
         for tgt in self.G.nodes():
             if tgt == source:
                 continue
                 
-            # Connection strength (inverse of network distance)
             cs = 1.0 / (dists.get(tgt, np.inf) + 1e-5)
-            
-            # Ideological proximity (negative absolute difference)
             x_j = self.G.nodes[tgt].get('IdeologyScore', 0)
             prox = -abs(x_i - x_j)
-            
-            # Influenceability (inverse of centrality)
             cent = self.G.nodes[tgt].get('EigenvectorCentrality', 1e-5)
             infl = 1.0 / cent if cent > 0 else 0
             
-            # Interaction term (connection * proximity)
-            inter = cs * prox
+            raw_components[tgt] = {'cs': cs, 'prox': prox, 'infl': infl}
+
+        if not raw_components:
+            return {}
+
+        # Step 2: Normalize each component across all targets to a [0, 1] range
+        def scale_component(key: str):
+            vals = [d[key] for d in raw_components.values()]
+            min_v, max_v = min(vals), max(vals)
+            if max_v == min_v:
+                for d in raw_components.values():
+                    d[f'norm_{key}'] = 0.5  # Assign neutral value if all are the same
+            else:
+                for d in raw_components.values():
+                    d[f'norm_{key}'] = (d[key] - min_v) / (max_v - min_v)
+
+        scale_component('cs')
+        scale_component('prox')
+        scale_component('infl')
+
+        # Step 3: Calculate final utility scores using normalized components
+        utils = {}
+        for tgt, comps in raw_components.items():
+            # Interaction term (using normalized values)
+            norm_inter = comps['norm_cs'] * comps['norm_prox']
             
             # Combined utility
-            utils[tgt] = w_conn*cs + w_prox*prox + w_inf*infl + w_int*inter
+            utils[tgt] = (w_conn * comps['norm_cs'] + 
+                          w_prox * comps['norm_prox'] + 
+                          w_inf * comps['norm_infl'] + 
+                          w_int * norm_inter)
         
         # Apply sigmoid transformation to normalize utilities
         sigmoid_utils = {

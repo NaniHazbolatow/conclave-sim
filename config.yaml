@@ -3,7 +3,7 @@
 
 # Active predefined group - determines participants and simulation scope
 groups:
-  active: medium                      # Options: small, medium, large, xlarge, full
+  active: xlarge                      # Options: small, medium, large, xlarge, full
 
 simulation:
   # Core simulation parameters
@@ -11,8 +11,8 @@ simulation:
   enable_parallel: true               # Enable parallel processing for better performance
   
   # Agent behavior parameters
-  rationality: 0.7                    # Range: 0.0 (fully random) - 1.0 (fully rational/utility-based)
-  temperature: 0.7                    # Range: 0.0 (deterministic) - 2.0 (highly creative/random)
+  rationality: 0.8                    # Range: 0.0 (fully random) - 1.0 (fully rational/utility-based)
+  temperature: 1.5                    # Range: 0.0 (deterministic) - 2.0 (highly creative/random)
   
   # Discussion settings
   discussion_group_size: 5            # Number of agents per discussion group
@@ -37,7 +37,7 @@ simulation:
 # LLM and model configuration
 models:
   llm:
-    backend: local                   # Options: 'remote' | 'local'
+    backend: remote                   # Options: 'remote' | 'local'
     model_name: meta-llama/llama-3.1-8b-instruct
     max_tokens: 500
     

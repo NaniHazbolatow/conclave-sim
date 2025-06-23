@@ -31,13 +31,19 @@ class BaseVariableGenerator:
         """Get agent attribute with fallback to default."""
         return getattr(agent, attribute_name, default)
     
-    def format_candidate_line(self, agent, include_cardinal_id: bool = False, include_votes: bool = False) -> str:
+    def format_candidate_line(self, agent, include_cardinal_id: bool = False, include_votes: bool = False, format_spec: str = 'full') -> str:
         """Format a standardized candidate line for listings."""
         name = agent.name
         cardinal_id_str = f"Cardinal {getattr(agent, 'cardinal_id', 'ID N/A')} - " if include_cardinal_id else ""
-        public_profile = getattr(agent, 'public_profile_csv', 'Public Profile N/A')
         
-        line = f"{cardinal_id_str}{name} – {public_profile}"
+        public_profile = getattr(agent, 'public_profile_csv', 'Public Profile N/A')
+
+        if format_spec == 'tags':
+            details = public_profile.split('|')[0].strip()
+        else:  # 'full'
+            details = public_profile
+
+        line = f"{cardinal_id_str}{name} – {details}"
         
         if include_votes and self.env.votingHistory:
             current_votes = self.env.votingHistory[-1]

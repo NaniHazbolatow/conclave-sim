@@ -117,6 +117,15 @@ class UnifiedPromptVariableGenerator:
         if agent_id is not None:
             agent_vars = self.agent_generator.generate_agent_variables(agent_id)
             variables.update(agent_vars)
+
+            # Get previous stance
+            agent = self.env.agents[agent_id]
+            if agent.stance_history:
+                previous_stance_obj = agent.stance_history[-1]
+                # Extract only the stance string from the history object
+                variables['previous_stance'] = previous_stance_obj.get('stance', 'No previous stance text available.')
+            else:
+                variables['previous_stance'] = "This is the first round, so you have no previous stance."
             
             # Add variable mappings for legacy template compatibility
             variables.update({

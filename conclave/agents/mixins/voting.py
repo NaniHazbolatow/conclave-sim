@@ -56,6 +56,16 @@ class VotingMixin:
                 cardinal_id_str = result.arguments.get("vote_cardinal_id")
                 
                 if cardinal_id_str is not None:
+                    # Handle abstention
+                    if str(cardinal_id_str) == '0':
+                        self.logger.info(f"{self.name} abstained from voting in round {current_round}")
+                        self.vote_history.append({
+                            "vote": 0,  # Representing abstention
+                            "reasoning": "Agent chose to abstain.",
+                            "round": current_round
+                        })
+                        return 0
+
                     try:
                         # Find the agent whose cardinal_id matches the vote
                         agent_to_vote_for_id = None
