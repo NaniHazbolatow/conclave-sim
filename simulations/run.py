@@ -1,5 +1,8 @@
 import sys
 import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from pathlib import Path
 import warnings
 import argparse
@@ -16,6 +19,7 @@ from config.scripts.models import RefactoredConfig, GroupsConfig, SimulationConf
 from conclave.environments.conclave_env import ConclaveEnv
 from conclave.agents.base import Agent
 from conclave.visualization.cardinal_visualizer import CardinalVisualizer
+from conclave.utils.logging import setup_stance_logger
 import pandas as pd
 import logging
 import datetime
@@ -190,6 +194,9 @@ def main():
         output_config_manager.initialize_logging(dynamic_logs_dir=logs_dir)
         # print("discussion_round.py: Logging initialized.")  # DEBUG PRINT
 
+        # Setup dedicated stance logger
+        stance_logger = setup_stance_logger(logs_dir)
+
         # Load configuration
         config = output_config_manager  # Use the output config manager
         num_cardinals = config.get_num_cardinals()
@@ -211,6 +218,7 @@ def main():
 
         election_round = 0
         winner_found = False
+        vote_counts = {}
 
         while election_round < max_election_rounds and not winner_found:
             election_round += 1
@@ -288,30 +296,18 @@ def main():
                 logger.error(f"Error saving even basic simulation summary: {fallback_error}")
 
         # Generate enhanced visualizations
-        try:
-            from conclave.visualization.cardinal_visualizer import CardinalVisualizer
-            visualizer = CardinalVisualizer(str(viz_dir))
-            visualizer.generate_stance_visualization_from_env(env)
-            logger.info("Stance progression visualization generated successfully")
-        except Exception as e:
-            logger.warning(f"Failed to generate visualization: {e}")
-
-        # Generate comprehensive visualization analysis
-        try:
-            import subprocess
-            results_dir = base_output_dir / "results"
-            if results_dir.exists():
-                cmd = [
-                    "python", "scripts/voting_analysis.py", 
-                    str(results_dir), 
-                    "--reduction-methods", "pca", "tsne", "umap"
-                ]
-                subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logger.info("Comprehensive visualization analysis generated successfully")
-            else:
-                logger.warning("Results directory not found for visualization")
-        except Exception as e:
-            logger.warning(f"Failed to generate visualization analysis: {e}")
+        if not args.no_viz:
+            try:
+                logger.info("Generating final visualizations...")
+                visualizer = CardinalVisualizer(str(viz_dir))
+                # Pass the final individual votes to the visualizer
+                final_individual_votes = env.individual_votes_history[-1] if env.individual_votes_history else {}
+                visualizer.generate_all_visualizations(env, vote_counts, final_individual_votes)
+                logger.info("All visualizations generated successfully.")
+            except Exception as e:
+                logger.error(f"Failed to generate visualizations: {e}", exc_info=True)
+        else:
+            logger.info("Visualization generation skipped due to --no-viz flag.")
 
     finally:
         # Restore the original working directory
@@ -319,7 +315,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # print("discussion_round.py: Script starting (__name__ == '__main__')")  # DEBUG PRINT
     main()
-    # print("discussion_round.py: Script finished.")  # DEBUG PRINT
-    
+    #print("discussion_round.py: Script starting (__name__ == '__main__')

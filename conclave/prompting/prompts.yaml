@@ -138,6 +138,8 @@ discussion_reflection: |
   #### Private Reflection – {agent_name}
   Persona snapshot:
   {persona_internal}
+  Stance digest:
+  {previous_stance}
 
   Round summary:
   {group_analysis_summary_text}
@@ -246,7 +248,7 @@ tool_definitions:
 
   generate_stance:
     name: "generate_stance"
-    description: "Generates an internal stance for a cardinal elector based on their profile and previous stance."
+    description: "Generates an internal stance for a cardinal elector based on their profile and previous stance. You must generate a stance."
     parameters:
       type: "object"
       properties:

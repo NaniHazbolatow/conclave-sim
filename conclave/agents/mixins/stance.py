@@ -12,6 +12,7 @@ import datetime
 from typing import Optional
 
 logger = logging.getLogger("conclave.agents.stance")
+stance_logger = logging.getLogger("conclave.stances")
 
 class StanceMixin:
     """Mixin providing stance management behavior for agents."""
@@ -53,6 +54,15 @@ class StanceMixin:
                     timestamp = datetime.datetime.now()
                     self.internal_stance = stance
                     self.last_stance_update = timestamp
+
+                    # Log to dedicated stance logger
+                    stance_logger.info({
+                        "round": self.env.votingRound,
+                        "agent_name": self.name,
+                        "agent_id": self.agent_id,
+                        "stance": stance,
+                    })
+
                     self.stance_history.append({
                         "timestamp": timestamp, 
                         "stance": self.internal_stance, 

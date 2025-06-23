@@ -9,10 +9,30 @@ import logging
 import sys
 from typing import Optional
 from pathlib import Path
+import json
 
 
 # Logger cache to avoid recreating loggers
 _logger_cache = {}
+
+
+class JsonFormatter(logging.Formatter):
+    """
+    Formats log records as a JSON string.
+    """
+    def format(self, record):
+        log_object = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "name": record.name,
+        }
+        # The actual message is expected to be a dict
+        if isinstance(record.msg, dict):
+            log_object.update(record.msg)
+        else:
+            log_object["message"] = record.getMessage()
+            
+        return json.dumps(log_object)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -98,19 +118,50 @@ def setup_logging(
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
-    
-    # File handler (if specified)
+
     if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(numeric_level)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
-    
-    # Set specific logger levels for common external libraries
-    logging.getLogger('httpx').setLevel(logging.WARNING)
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('requests').setLevel(logging.WARNING)
+
+
+def setup_stance_logger(log_dir: Path) -> logging.Logger:
+    """
+    Sets up a dedicated logger for recording agent stances in JSONL format.
+
+    Args:
+        log_dir: The directory where the log file will be created.
+
+    Returns:
+        A configured logger instance for stances.
+    """
+    stance_logger_name = "conclave.stances"
+    if stance_logger_name in _logger_cache:
+        return _logger_cache[stance_logger_name]
+
+    logger = logging.getLogger(stance_logger_name)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # Prevent logs from propagating to the root logger
+
+    # Stance log file
+    stance_log_file = log_dir / "stances.log"
+
+    # Create file handler
+    file_handler = logging.FileHandler(stance_log_file)
+    file_handler.setLevel(logging.INFO)
+
+    # Create JSON formatter
+    formatter = JsonFormatter()
+    file_handler.setFormatter(formatter)
+
+    # Clear existing handlers and add the new one
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(file_handler)
+
+    _logger_cache[stance_logger_name] = logger
+    return logger
 
 
 def configure_component_loggers() -> None:

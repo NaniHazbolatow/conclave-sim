@@ -193,9 +193,9 @@ class VotingVariableGenerator(BaseVariableGenerator):
             
             if previous_votes:
                 delta = votes - previous_votes.get(candidate_id, 0)
-                if delta >= 2:
+                if delta >= 4:
                     tag = "gaining"
-                elif delta <= -2:
+                elif delta <= -4:
                     tag = "losing"
                 elif votes == 0:
                     tag = "dropped"

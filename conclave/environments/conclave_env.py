@@ -760,7 +760,7 @@ class ConclaveEnv:
                 # ... (existing error handling) ...
                 error_msg = result.error if result.error else "Unknown tool calling failure during analysis."
                 logger.error(f"Tool calling failed for group {group_idx + 1} discussion analysis: {error_msg}")
-                self.group_discussion_analyses[group_idx] = {"analysis_summary": f"Failed: {error_msg}", "raw_response": result.raw_response_content, "error": error_msg}
+                self.group_discussion_analyses[group_idx] = {"analysis_summary": f"Failed: {error_msg}", "raw_response": result.raw_response, "error": error_msg}
         except Exception as e:
             # ... (existing error handling) ...
             logger.error(f"Exception during discussion analysis for group {group_idx + 1}: {e}", exc_info=True)

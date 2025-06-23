@@ -15,6 +15,7 @@ temp/
 .env
 
 # Cache files
-~/.cache
-
+.cache/
 outputs/
+
+.pytest_cache/
