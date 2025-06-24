@@ -209,7 +209,7 @@ class LLMClientManager:
         llm_config = self.config_manager.config.models.llm
         
         # Based on your config.yaml, model_name is at the top level
-        model_name = getattr(llm_config, 'model_name', 'meta-llama/llama-3.1-8b-instruct')
+        model_name = getattr(llm_config, 'model_name', 'meta-llama/Meta-Llama-3.1-8B-Instruct')
         
         return LocalLLMClient(model_name=model_name)
     
