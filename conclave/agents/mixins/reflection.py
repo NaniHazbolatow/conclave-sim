@@ -77,13 +77,7 @@ class ReflectionMixin:
             self.logger.debug(f"=== END REFLECTION RESULT ====")
 
             if result.success and result.arguments:
-                reflection_text = result.arguments.get("reflection_digest", "").strip()
-                if reflection_text:
-                    self.current_reflection_digest = reflection_text
-                    self.logger.info(f"Agent {self.name} (ID: {self.agent_id}) successfully reflected. Digest: {self.current_reflection_digest[:100]}...")
-                else:
-                    self.current_reflection_digest = "Reflection generated an empty digest."
-                    self.logger.warning(f"Agent {self.name} (ID: {self.agent_id}) generated an empty reflection digest.")
+                self.tool_executor.execute("discussion_reflection", result.arguments)
             else:
                 error_msg = result.error if result.error else "Unknown tool calling failure during reflection."
                 self.current_reflection_digest = f"Reflection failed: {error_msg}"
@@ -97,3 +91,12 @@ class ReflectionMixin:
         self.last_reflection_round = current_discussion_round
         logger.debug(f"Agent {self.name} (ID: {self.agent_id}) exiting reflect_on_discussion. Digest: {self.current_reflection_digest[:100]}...")
         return self.current_reflection_digest
+
+    def _execute_discussion_reflection(self, reflection_digest: str):
+        """Executes the discussion_reflection tool call."""
+        if reflection_digest and isinstance(reflection_digest, str) and reflection_digest.strip():
+            self.current_reflection_digest = reflection_digest.strip()
+            self.logger.info(f"Agent {self.name} (ID: {self.agent_id}) successfully reflected. Digest: {self.current_reflection_digest[:100]}...")
+        else:
+            self.current_reflection_digest = "Reflection generated an empty digest."
+            self.logger.warning(f"Agent {self.name} (ID: {self.agent_id}) generated an empty reflection digest.")

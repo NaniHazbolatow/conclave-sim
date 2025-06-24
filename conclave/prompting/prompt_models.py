@@ -14,20 +14,30 @@ class ToolParameterProperty(BaseModel):
 class ToolParameters(BaseModel):
     """Defines the parameters object for a tool, following OpenAI structure."""
     type: str = "object"
-    properties: Dict[str, ToolParameterProperty]
-    required: Optional[List[str]] = Field(default_factory=list)
+    properties: Dict[str, ToolParameterProperty] = Field(default_factory=dict)
+    required: List[str] = Field(default_factory=list)
 
 class ToolDefinition(BaseModel):
     """Pydantic model for a single tool definition from prompts.yaml."""
     name: str
     description: str
-    parameters: ToolParameters
-    example_json: Optional[str] = None
-    additional_prompt_instructions: Optional[str] = None
+    parameters: Optional[ToolParameters] = None
 
-    # For compatibility if model_dump() is called elsewhere
-    def model_dump(self, **kwargs):
-        return self.dict(**kwargs)
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the tool definition to a dictionary suitable for an LLM API call."""
+        tool_dict = {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+            }
+        }
+        # Ensure parameters are included only if they exist, otherwise use a default empty schema
+        if self.parameters and self.parameters.properties:
+            tool_dict["function"]["parameters"] = self.parameters.model_dump()
+        else:
+            tool_dict["function"]["parameters"] = {"type": "object", "properties": {}, "required": []}
+        return tool_dict
 
 class PromptsConfig(BaseModel):
     """Pydantic model for the entire prompts.yaml structure."""

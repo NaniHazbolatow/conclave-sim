@@ -48,64 +48,59 @@ class StanceMixin:
             self.logger.debug(f"=== END STANCE RESULT ====")
             
             if result.success and result.arguments:
-                stance = result.arguments.get("stance", "").strip()
-                
-                if stance:
-                    timestamp = datetime.datetime.now()
-                    self.internal_stance = stance
-                    self.last_stance_update = timestamp
+                self.tool_executor.execute("generate_stance", result.arguments)
+            else:
+                error_msg = result.error if result.error else "Unknown error in stance generation"
+                self.logger.error(f"Failed to generate stance for {self.name}: {error_msg}")
+                self._update_stance_history_with_error(error_msg)
 
-                    # Log to dedicated stance logger
-                    stance_logger.info({
-                        "round": self.env.votingRound,
-                        "agent_name": self.name,
-                        "agent_id": self.agent_id,
-                        "stance": stance,
-                    })
-
-                    self.stance_history.append({
-                        "timestamp": timestamp, 
-                        "stance": self.internal_stance, 
-                        "status": "generated",
-                        "voting_round": self.env.votingRound, 
-                        "discussion_round": self.env.discussionRound,
-                        "reflection_used": self.current_reflection_digest if self.last_reflection_timestamp and self.last_reflection_timestamp <= timestamp else "N/A"
-                    })
-                    self.logger.info(f"Successfully generated stance for {self.name} (informed by reflection round {self.last_reflection_round if self.last_reflection_timestamp and self.last_reflection_timestamp <= timestamp else 'N/A'}): {stance[:100]}{'...' if len(stance) > 100 else ''}")
-                    return self.internal_stance
-                else:
-                    self.logger.warning(f"Empty stance returned for {self.name}")
-                    
-            error_msg = result.error if result.error else "Unknown error in stance generation"
-            self.logger.error(f"Failed to generate stance for {self.name}: {error_msg}")
-            
-            timestamp = datetime.datetime.now()
-            self.internal_stance = f"[Stance generation failed for {self.name}]"
-            self.last_stance_update = timestamp
-            self.stance_history.append({
-                "timestamp": timestamp, 
-                "stance": self.internal_stance, 
-                "status": "failed",
-                "voting_round": self.env.votingRound, 
-                "discussion_round": self.env.discussionRound,
-                "error": error_msg
-            })
             return self.internal_stance
             
         except Exception as e:
             self.logger.error(f"Error in stance generation for {self.name}: {e}", exc_info=True)
+            self._update_stance_history_with_error(str(e))
+            return self.internal_stance
+
+    def _execute_generate_stance(self, stance: str):
+        """Executes the generate_stance tool call."""
+        if stance and isinstance(stance, str) and stance.strip():
             timestamp = datetime.datetime.now()
-            self.internal_stance = f"[Stance generation error for {self.name}]"
+            self.internal_stance = stance.strip()
             self.last_stance_update = timestamp
+
+            stance_logger.info({
+                "round": self.env.votingRound,
+                "agent_name": self.name,
+                "agent_id": self.agent_id,
+                "stance": self.internal_stance,
+            })
+
             self.stance_history.append({
                 "timestamp": timestamp, 
                 "stance": self.internal_stance, 
-                "status": "error",
+                "status": "generated",
                 "voting_round": self.env.votingRound, 
                 "discussion_round": self.env.discussionRound,
-                "error": str(e)
+                "reflection_used": self.current_reflection_digest if self.last_reflection_timestamp and self.last_reflection_timestamp <= timestamp else "N/A"
             })
-            return self.internal_stance
+            self.logger.info(f"Successfully generated stance for {self.name}: {self.internal_stance[:100]}...")
+        else:
+            self.logger.warning(f"Empty stance returned for {self.name}")
+            self._update_stance_history_with_error("Empty stance returned")
+
+    def _update_stance_history_with_error(self, error_msg: str):
+        """Helper to update stance history with an error."""
+        timestamp = datetime.datetime.now()
+        self.internal_stance = f"[Stance generation failed for {self.name}]"
+        self.last_stance_update = timestamp
+        self.stance_history.append({
+            "timestamp": timestamp, 
+            "stance": self.internal_stance, 
+            "status": "error",
+            "voting_round": self.env.votingRound, 
+            "discussion_round": self.env.discussionRound,
+            "error": error_msg
+        })
 
     def get_internal_stance(self) -> str:
         """

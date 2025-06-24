@@ -11,6 +11,7 @@ import logging
 import time
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
+from conclave.prompting.prompt_models import ToolDefinition
 
 logger = logging.getLogger("conclave.llm")
 
@@ -45,162 +46,95 @@ class ToolCallResult:
     strategy_used: str = "prompt_based"
 
 class JSONParser:
-    """Robust JSON parser with multiple extraction strategies."""
-    
+    """
+    Robust JSON parser that extracts the first valid JSON object from a text response
+    by correctly handling nested structures.
+    """
+
     @staticmethod
     def clean_text(text: str) -> str:
-        """Clean text of control characters and other problematic characters."""
-        # Remove control characters (except tab, newline, carriage return)
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
-        
-        # Fix common JSON issues in the text
-        cleaned = cleaned.replace('\\n', '\n')  # Convert escaped newlines back
-        cleaned = cleaned.replace('\\r', '\r')  # Convert escaped carriage returns back
-        cleaned = cleaned.replace('\\t', '\t')  # Convert escaped tabs back
-        
+        """Clean text of control characters and markdown fences."""
+        cleaned = re.sub(r'''[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]''', '', text)
+        cleaned = re.sub(r'''^```json\s*|```$''', '', cleaned, flags=re.MULTILINE).strip()
         return cleaned
-    
+
     @staticmethod
-    def extract_json_balanced_braces(text: str) -> Optional[str]:
-        """Extract JSON using balanced brace counting."""
-        start_pos = text.find('{')
-        if start_pos == -1:
+    def extract_json_block(text: str) -> Optional[str]:
+        """
+        Extracts the first complete JSON object from a string by counting braces.
+        """
+        start_index = text.find('{')
+        if start_index == -1:
             return None
-        
-        brace_count = 0
+
+        brace_level = 0
         in_string = False
-        escape_next = False
-        
-        for i, char in enumerate(text[start_pos:], start_pos):
-            if escape_next:
-                escape_next = False
+        escape_char = False
+
+        for i, char in enumerate(text[start_index:]):
+            current_index = start_index + i
+            if escape_char:
+                escape_char = False
                 continue
-                
+
             if char == '\\':
-                escape_next = True
+                escape_char = True
                 continue
-                
-            if char == '"' and not escape_next:
+
+            if char == '"' and not escape_char:
                 in_string = not in_string
-                continue
-                
+
             if not in_string:
                 if char == '{':
-                    brace_count += 1
+                    brace_level += 1
                 elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        return text[start_pos:i+1]
+                    brace_level -= 1
+            
+            if brace_level == 0:
+                return text[start_index : current_index + 1]
         
-        return None
-    
+        return None # Incomplete JSON if loop finishes
+
     @staticmethod
-    def extract_json_regex(text: str) -> Optional[str]:
-        """Extract JSON using regex patterns."""
-        # Try to find JSON block between braces
-        pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        matches = re.findall(pattern, text, re.DOTALL)
-        
-        if matches:
-            return matches[0]
-        
-        return None
-    
-    @staticmethod
-    def parse_tool_response(text: str) -> ToolCallResult:
-        """Parse tool response from LLM text with multiple fallback strategies."""
+    def parse_tool_response(text: str, tool_choice: Optional[str] = None) -> ToolCallResult:
+        """
+        Parses a tool response from LLM text, handling multiple common JSON structures.
+        """
         if not text or not text.strip():
             return ToolCallResult(success=False, error="Empty response")
-        
-        # Clean the text first
+
         cleaned_text = JSONParser.clean_text(text)
-        
-        # Try multiple extraction methods
-        extraction_methods = [
-            JSONParser.extract_json_balanced_braces,
-            JSONParser.extract_json_regex,
-        ]
-        
-        for method in extraction_methods:
-            try:
-                json_str = method(cleaned_text)
-                if json_str:
-                    # Try to parse the JSON
-                    parsed = json.loads(json_str)
-                    
-                    # Validate structure
-                    if isinstance(parsed, dict):
-                        function_name = parsed.get('function_name') or parsed.get('name')
-                        arguments = parsed.get('arguments') or parsed.get('parameters') or {}
-                        
-                        if function_name:
-                            return ToolCallResult(
-                                success=True,
-                                function_name=function_name,
-                                arguments=arguments,
-                                raw_response=text
-                            )
-            except json.JSONDecodeError:
-                continue
-            except Exception as e:
-                logger.debug(f"JSON extraction method failed: {e}")
-                continue
-        
-        # If all extraction methods fail, try to extract function name and arguments manually
+        json_str = JSONParser.extract_json_block(cleaned_text)
+
+        if not json_str:
+            return ToolCallResult(success=False, error="Could not extract a complete JSON block from the response.", raw_response=text)
+
         try:
-            # Look for function name patterns
-            name_patterns = [
-                r'"function_name"\s*:\s*"([^"]+)"',
-                r'"name"\s*:\s*"([^"]+)"',
-                r'function_name:\s*"([^"]+)"',
-                r'name:\s*"([^"]+)"'
-            ]
-            
-            function_name = None
-            for pattern in name_patterns:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    function_name = match.group(1)
-                    break
-            
-            if function_name:
-                # Try to extract arguments
-                arguments = {}
-                
-                # Look for common argument patterns
-                arg_patterns = [
-                    r'"arguments"\s*:\s*\{([^}]+)\}',
-                    r'"parameters"\s*:\s*\{([^}]+)\}',
-                    r'arguments:\s*\{([^}]+)\}',
-                    r'parameters:\s*\{([^}]+)\}'
-                ]
-                
-                for pattern in arg_patterns:
-                    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-                    if match:
-                        try:
-                            # Try to parse the arguments as JSON
-                            arg_content = '{' + match.group(1) + '}'
-                            arguments = json.loads(arg_content)
-                            break
-                        except json.JSONDecodeError:
-                            continue
-                
-                return ToolCallResult(
-                    success=True,
-                    function_name=function_name,
-                    arguments=arguments,
-                    raw_response=text
-                )
-        except Exception as e:
-            logger.debug(f"Manual extraction failed: {e}")
-        
-        # Final fallback - return failure with original text
-        return ToolCallResult(
-            success=False,
-            error=f"Could not parse tool response from: {text[:200]}...",
-            raw_response=text
-        )
+            parsed = json.loads(json_str)
+            if not isinstance(parsed, dict):
+                return ToolCallResult(success=False, error="Parsed JSON is not a dictionary.", raw_response=text)
+
+            # Strategy 1: Standard format `{"name": "...", "arguments": {...}}`
+            func_name = parsed.get('name') or parsed.get('function_name')
+            arguments = parsed.get('arguments') or parsed.get('parameters')
+            if func_name and isinstance(arguments, dict):
+                return ToolCallResult(success=True, function_name=func_name, arguments=arguments, raw_response=text, strategy_used="prompt_based_standard")
+
+            # Strategy 2: Nested format `{"tool_name": {"arg": "value"}}`
+            if len(parsed) == 1:
+                potential_func_name = list(parsed.keys())[0]
+                potential_args = parsed[potential_func_name]
+                if isinstance(potential_args, dict):
+                    return ToolCallResult(success=True, function_name=potential_func_name, arguments=potential_args, raw_response=text, strategy_used="prompt_based_nested")
+
+            # Strategy 3: Argument-only format `{"arg": "value"}`
+            if tool_choice:
+                return ToolCallResult(success=True, function_name=tool_choice, arguments=parsed, raw_response=text, strategy_used="prompt_based_args_only")
+
+            return ToolCallResult(success=False, error="Could not determine tool call structure from the parsed JSON.", raw_response=text)
+
+        except json.JSONDecodeError as e:
+            return ToolCallResult(success=False, error=f"Failed to decode extracted JSON: {e}", raw_response=text)
 
 class SimplifiedToolCaller:
     """Simplified tool calling interface using prompt-based approach for all models."""
@@ -218,7 +152,9 @@ class SimplifiedToolCaller:
         """Calls a tool using the legacy prompt-based approach with retries."""
         self.logger.info("Attempting to call tool using prompt-based strategy.")
         
-        prompt = _build_prompt_for_tools(messages, tools, tool_choice)
+        # Convert ToolDefinition objects to dicts for the prompt
+        prompt_tools = [tool.to_dict() if hasattr(tool, 'to_dict') else tool for tool in tools]
+        prompt = _build_prompt_for_tools(messages, prompt_tools, tool_choice)
 
         for i in range(self.max_retries):
             try:
@@ -232,7 +168,7 @@ class SimplifiedToolCaller:
                     continue
 
                 # Use the JSONParser to extract the tool call from the text
-                parsed_result = JSONParser.parse_tool_response(raw_response)
+                parsed_result = JSONParser.parse_tool_response(raw_response, tool_choice=tool_choice)
 
                 if parsed_result.success:
                     self.logger.info("Successfully parsed tool call using prompt-based strategy.")
@@ -258,9 +194,13 @@ class SimplifiedToolCaller:
     def _call_tool_natively(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
         """Calls a tool using the modern, native approach, with a prompt-based fallback."""
         self.logger.info("Attempting to call tool using native strategy.")
+        
+        # Ensure tools are in the correct dictionary format for the API
+        api_tools = [tool.to_dict() if hasattr(tool, 'to_dict') else tool for tool in tools]
+        
         response = self.llm_client.generate(
             messages,
-            tools=tools,
+            tools=api_tools,
             tool_choice=tool_choice
         )
 
@@ -289,21 +229,29 @@ class SimplifiedToolCaller:
             "Attempting to parse the text response as a fallback."
         )
         
-        # If the model didn't use the tool, it might have put the JSON in the text
+        # Fallback 1: Try the Llama 3.1 specific parser first
+        raw_response_from_local = response.get("raw_response")
+        if raw_response_from_local:
+            llama_parsed_result = Llama31ToolParser.parse(raw_response_from_local)
+            if llama_parsed_result and llama_parsed_result.success:
+                self.logger.info("Successfully parsed tool call using Llama31ToolParser.")
+                return llama_parsed_result
+
+        # Fallback 2: If the model didn't use the tool, it might have put the JSON in the text
         if raw_text_response:
-            parsed_result = JSONParser.parse_tool_response(raw_text_response)
+            parsed_result = JSONParser.parse_tool_response(raw_text_response, tool_choice=tool_choice)
             if parsed_result.success:
                 self.logger.info("Successfully parsed tool call from text response as a native fallback.")
                 # Override strategy to indicate it was a fallback
-                parsed_result.strategy_used = "native_fallback"
+                parsed_result.strategy_used = "native_fallback_json"
                 return parsed_result
 
-        # If both native call and text parsing fail
-        return ToolCallResult(
-            success=False, 
-            error="Model did not return a tool_calls object, and no valid JSON was found in the text response.",
-            raw_response=raw_text_response
+        # If both native call and text parsing fail, trigger the prompt-based fallback
+        self.logger.warning(
+            "Native tool-calling and text-parsing fallback both failed. "
+            "Switching to the prompt-based strategy as a final attempt."
         )
+        return self._call_tool_with_prompt(messages, tools, tool_choice)
 
     def call_tool(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
         """Call a tool using the best available strategy."""
@@ -313,5 +261,49 @@ class SimplifiedToolCaller:
             self.logger.warning("LLM client does not support native tools. Falling back to prompt-based strategy.")
             return self._call_tool_with_prompt(messages, tools, tool_choice)
 
-class ToolExecutor:
-    """Executes a tool call and returns the result."""
+class Llama31ToolParser:
+    """
+    Parses tool calls from Llama 3.1's specific text output format.
+    """
+    @staticmethod
+    def parse(raw_text: str) -> Optional[ToolCallResult]:
+        """
+        Extracts and parses a tool call from the Llama 3.1 raw text output.
+        Looks for `<|begin_of_tool_code|>` and `<|end_of_tool_code|>` tags.
+        """
+        logger.debug("Attempting to parse tool call using Llama31ToolParser.")
+        # Regex to find the content within the tool code tags
+        match = re.search(r"<\|begin_of_tool_code\|>\s*(.*?)\s*<\|end_of_tool_code\|>", raw_text, re.DOTALL)
+        
+        if not match:
+            logger.debug("Llama31ToolParser: No tool code tags found.")
+            return None
+
+        tool_code_str = match.group(1).strip()
+        logger.debug(f"Llama31ToolParser: Extracted tool code: {tool_code_str}")
+
+        # Regex to extract function name and arguments from a Python-like call
+        call_match = re.match(r"(\w+)\((.*)\)", tool_code_str)
+        if not call_match:
+            logger.warning(f"Llama31ToolParser: Could not parse function call structure from: {tool_code_str}")
+            return None
+
+        function_name = call_match.group(1)
+        args_str = call_match.group(2)
+
+        try:
+            # This is a simplified way to parse Python keyword arguments.
+            # It might not handle all edge cases (e.g., nested structures in args).
+            # A more robust solution might use ast.literal_eval on a dict-like string.
+            arguments = dict(re.findall(r"(\w+)=['\"](.*?)['\"]", args_str))
+            logger.info(f"Llama31ToolParser: Successfully parsed tool call: {function_name} with args {arguments}")
+            return ToolCallResult(
+                success=True,
+                function_name=function_name,
+                arguments=arguments,
+                raw_response=raw_text,
+                strategy_used="native_fallback_llama3.1_parser"
+            )
+        except Exception as e:
+            logger.error(f"Llama31ToolParser: Failed to parse arguments from string: '{args_str}'. Error: {e}")
+            return None

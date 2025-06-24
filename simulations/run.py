@@ -189,7 +189,7 @@ def main():
 
         # Setup logging using config adapter
         # print("discussion_round.py: Attempting to initialize logging...")  # DEBUG PRINT
-        output_config_manager.initialize_logging(dynamic_logs_dir=logs_dir)
+        output_config_manager.initialize_logging(dynamic_logs_dir=logs_dir.resolve())
         # print("discussion_round.py: Logging initialized.")  # DEBUG PRINT
 
         # Setup dedicated stance logger

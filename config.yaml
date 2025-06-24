@@ -36,8 +36,8 @@ simulation:
 # LLM and model configuration
 models:
   llm:
-    backend: remote                   # Options: 'remote' | 'local'
-    model_name: meta-llama/Meta-Llama-3.1-8B-Instruct
+    backend: local                   # Options: 'remote' | 'local'
+    model_name: meta-llama/Llama-3.2-1B-Instruct
     #model_name: google/gemini-2.0-flash-001
     temperature: 0.7
     max_tokens: 800
@@ -81,7 +81,7 @@ models:
 output:
   # Logging settings
   logging:
-    log_level: ERROR                   # Options: DEBUG, INFO, WARNING, ERROR
+    level: info                     # Options: debug, info, warning, error, critical
     performance_logging: true
   
   # Results saving

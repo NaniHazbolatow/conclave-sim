@@ -19,6 +19,7 @@ from config.scripts import get_config  # New config adapter
 from conclave.llm import get_llm_client, SimplifiedToolCaller
 from ..prompting import get_prompt_loader
 from ..prompting.unified_generator import UnifiedPromptVariableGenerator
+from .tool_executor import ToolExecutor
 
 # Import mixins
 from .mixins import VotingMixin, DiscussionMixin, StanceMixin, ReflectionMixin
@@ -89,6 +90,7 @@ class Agent(VotingMixin, DiscussionMixin, StanceMixin, ReflectionMixin):
         try:
             self.llm_client = get_llm_client("agent")
             self.tool_caller = SimplifiedToolCaller(self.llm_client, self.logger)
+            self.tool_executor = ToolExecutor(self)
             
             self.logger.info(f"Agent {self.name} initialized with {self.config.models.llm.backend} backend, model: {self.llm_client.model_name}")
             

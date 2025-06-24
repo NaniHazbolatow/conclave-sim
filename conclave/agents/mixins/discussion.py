@@ -57,24 +57,7 @@ class DiscussionMixin:
             self.logger.info(f"DISCUSSION TOOL CALL COMPLETED for {self.name} - Success: {result.success}, Strategy: {result.strategy_used}")
             
             if result.success and result.arguments:
-                # Debug logging to understand what we're getting
-                self.logger.info(f"DEBUG: result.arguments type: {type(result.arguments)}, value: {result.arguments}")
-                
-                if isinstance(result.arguments, dict):
-                    message = result.arguments.get("message", "")
-                elif isinstance(result.arguments, str):
-                    # Handle case where arguments is a string (fallback parsing)
-                    message = result.arguments
-                else:
-                    self.logger.warning(f"Unexpected arguments type: {type(result.arguments)}")
-                    message = str(result.arguments)
-                
-                if not message.strip():
-                    self.logger.warning(f"{self.name} ({self.agent_id}) provided an empty message.")
-                    message = "(Agent provided no message)"
-
-                self.logger.info(f"{self.name} ({self.agent_id}) speaks:\\n{message}")
-                return {"agent_id": self.agent_id, "message": message}
+                return self.tool_executor.execute("speak_message", result.arguments)
             else:
                 error_msg = result.error if result.error else "Unknown tool calling failure."
                 self.logger.warning(f"Discussion tool calling failed for {self.name}: {error_msg}")
@@ -83,3 +66,12 @@ class DiscussionMixin:
         except Exception as e:
             self.logger.error(f"Error in Agent {self.name} ({self.agent_id}) discussion: {e}", exc_info=True)
             return {"agent_id": self.agent_id, "message": f"(Discussion error: {e})"}
+
+    def _execute_speak_message(self, message: str) -> Dict[str, Any]:
+        """Executes the speak_message tool call."""
+        if not isinstance(message, str) or not message.strip():
+            self.logger.warning(f"{self.name} ({self.agent_id}) provided an empty or invalid message during discussion.")
+            message = "(Agent provided no message)"
+
+        self.logger.info(f"{self.name} ({self.agent_id}) speaks:\n{message}")
+        return {"agent_id": self.agent_id, "message": message}

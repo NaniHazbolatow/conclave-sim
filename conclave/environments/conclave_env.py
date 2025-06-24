@@ -38,6 +38,7 @@ class ConclaveEnv:
         self.voting_participation = {}
         self.voting_lock = threading.Lock()
         self.winner: Optional[int] = None
+        self.cardinal_id_to_agent_id_map = {}  # Maps Cardinal_ID to agent_id (list index)
         self.discussionHistory: List[List[Dict]] = []
         self.discussionRound = 0
         self.agent_discussion_participation: Dict[int, List[int]] = {}
@@ -218,12 +219,10 @@ class ConclaveEnv:
                     original_candidate_ids_for_group = active_group_config['candidate_ids']
                     
                     # Create a mapping from Cardinal_ID to agent_id (list_index)
-                    cardinal_id_to_agent_id_map = {int(row['Cardinal_ID']): list_idx for list_idx, (_, row) in enumerate(master_df_to_load.iterrows())}
-                    
-                    self.candidate_ids = [cardinal_id_to_agent_id_map[cid] for cid in original_candidate_ids_for_group if cid in cardinal_id_to_agent_id_map]
-                    
+                    self.cardinal_id_to_agent_id_map = {int(row['Cardinal_ID']): list_idx for list_idx, (_, row) in enumerate(master_df_to_load.iterrows())}
+                    self.candidate_ids = [self.cardinal_id_to_agent_id_map[cid] for cid in original_candidate_ids_for_group if cid in self.cardinal_id_to_agent_id_map]
                     if len(self.candidate_ids) != len(original_candidate_ids_for_group):
-                        missing_candidates = set(original_candidate_ids_for_group) - set(cardinal_id_to_agent_id_map.keys())
+                        missing_candidates = set(original_candidate_ids_for_group) - set(self.cardinal_id_to_agent_id_map.keys())
                         logger.warning(
                             f"Some candidate Cardinal_IDs for predefined group '{self.active_group_name}' were not loaded: {missing_candidates}. "
                             f"Available candidates (agent_ids): {self.candidate_ids}"
