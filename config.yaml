@@ -3,7 +3,7 @@
 
 # Active predefined group - determines participants and simulation scope
 groups:
-  active: xlarge                      # Options: small, medium, large, xlarge, full
+  active: small                      # Options: small, medium, large, xlarge, full
 
 simulation:
   # Core simulation parameters
@@ -12,7 +12,6 @@ simulation:
   
   # Agent behavior parameters
   rationality: 0.8                    # Range: 0.0 (fully random) - 1.0 (fully rational/utility-based)
-  temperature: 1.5                    # Range: 0.0 (deterministic) - 2.0 (highly creative/random)
   
   # Discussion settings
   discussion_group_size: 5            # Number of agents per discussion group
@@ -38,8 +37,10 @@ simulation:
 models:
   llm:
     backend: remote                   # Options: 'remote' | 'local'
-    model_name: meta-llama/llama-3.1-8b-instruct
-    max_tokens: 500
+    model_name: meta-llama/Meta-Llama-3.1-8B-Instruct
+    #model_name: google/gemini-2.0-flash-001
+    temperature: 0.7
+    max_tokens: 800
     
     # Tool calling configuration
     tool_calling:
@@ -52,6 +53,7 @@ models:
     remote:
       base_url: https://openrouter.ai/api/v1
       api_key_env: OPENROUTER_API_KEY
+      native_tool_calling: false # Set to true only if the API supports the 'tools' parameter
       top_p: 0.9
       frequency_penalty: 0.1
       presence_penalty: 0.1
@@ -63,7 +65,7 @@ models:
       cache_dir: ~/.cache/huggingface
       do_sample: true
       top_p: 0.9
-      repetition_penalty: 1.1
+      repetition_penalty: 1.05
   
   # Embeddings configuration
   embeddings:

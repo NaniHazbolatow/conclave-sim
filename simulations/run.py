@@ -109,8 +109,6 @@ def apply_cli_overrides(config: RefactoredConfig, args: argparse.Namespace) -> R
     if args.temperature is not None:
         if not 0.0 <= args.temperature <= 2.0:
             raise ValueError("temperature must be between 0.0 and 2.0")
-        config.simulation.temperature = args.temperature
-        # Also update LLM temperature if not explicitly set differently
         config.models.llm.temperature = args.temperature
     
     if args.discussion_size is not None:

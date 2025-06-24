@@ -9,7 +9,7 @@ import threading
 import logging
 from typing import Optional, Dict, Any
 from config.scripts import get_config  # Use new config adapter
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 import torch
 
 logger = logging.getLogger("conclave.llm")
@@ -98,25 +98,19 @@ class LLMClientManager:
         import json
         
         class SimpleRemoteClient:
-            def __init__(self, model_name, api_key=None, base_url="https://openrouter.ai/api/v1"):
+            def __init__(self, model_name, api_key=None, base_url="https://openrouter.ai/api/v1", supports_native_tools=True):
                 self.model_name = model_name
                 self.api_key = api_key
                 self.base_url = base_url
+                self.supports_native_tools = supports_native_tools
                 
-            def generate(self, messages, **kwargs):
-                """Generate a response using the remote API (method expected by SimplifiedToolCaller)."""
-                # Handle both string prompts and message lists
+            def generate(self, messages, tools=None, tool_choice=None, **kwargs):
+                """Generate a response using the remote API, with native tool support."""
                 if isinstance(messages, str):
-                    prompt = messages
-                elif isinstance(messages, list):
-                    # Extract content from message format
-                    if len(messages) > 0 and isinstance(messages[0], dict):
-                        prompt = messages[0].get('content', str(messages))
-                    else:
-                        prompt = str(messages)
+                    api_messages = [{"role": "user", "content": messages}]
                 else:
-                    prompt = str(messages)
-                
+                    api_messages = messages
+
                 headers = {
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.api_key}"
@@ -124,82 +118,139 @@ class LLMClientManager:
                 
                 data = {
                     "model": self.model_name,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": api_messages,
                     "temperature": kwargs.get("temperature", 0.7),
                     "max_tokens": kwargs.get("max_tokens", 500)
                 }
+
+                # Add tool parameters to the API request payload
+                if tools:
+                    data["tools"] = tools
+                    if tool_choice:
+                        data["tool_choice"] = tool_choice
                 
                 try:
                     response = requests.post(f"{self.base_url}/chat/completions", 
                                            headers=headers, json=data, timeout=30)
                     response.raise_for_status()
                     result = response.json()
-                    return result["choices"][0]["message"]["content"]
+                    message = result["choices"][0]["message"]
+                    
+                    # Extract text and tool_calls from the response
+                    response_text = message.get("content") or ""
+                    tool_calls = message.get("tool_calls")
+
+                    return {"text": response_text, "tool_calls": tool_calls}
                 except Exception as e:
-                    return f"Error generating response: {e}"
+                    return {"text": f"Error generating response: {e}", "tool_calls": None}
                     
             def generate_response(self, prompt, **kwargs):
                 """Legacy method name for backward compatibility."""
                 return self.generate(prompt, **kwargs)
         
-        # Get configuration - FIXED: Use correct method
-        client_kwargs = self.config_manager.get_llm_client_kwargs()  # ConfigAdapter has this method directly
-        model_name = client_kwargs.get("model_name", "openai/gpt-4o-mini")
+        # Get configuration for the remote client
+        llm_config = self.config_manager.config.models.llm
+        remote_config = getattr(llm_config, 'remote', None)
+        
+        model_name = getattr(llm_config, 'model_name', 'openai/gpt-4o-mini')
+        
+        # Safely access attributes from the Pydantic model, providing defaults
+        base_url = getattr(remote_config, 'base_url', 'https://openrouter.ai/api/v1') if remote_config else 'https://openrouter.ai/api/v1'
+        supports_native_tools = getattr(remote_config, 'native_tool_calling', True) if remote_config else True
+        
+        # API key is handled by the config manager
+        client_kwargs = self.config_manager.get_llm_client_kwargs()
         api_key = client_kwargs.get("api_key")
         
-        return SimpleRemoteClient(model_name=model_name, api_key=api_key)
+        return SimpleRemoteClient(
+            model_name=model_name, 
+            api_key=api_key, 
+            base_url=base_url, 
+            supports_native_tools=supports_native_tools
+        )
     
     def _create_local_client(self):
         """Create a local LLM client using transformers."""
 
         
         class LocalLLMClient:
-            def __init__(self, model_name):
+            def __init__(self, model_name, local_config):
                 self.model_name = model_name
-                logger.info(f"Loading local model: {model_name}")
+                self.config = local_config
+                # Check for native tool support based on model name
+                self.supports_native_tools = "llama-3.1" in self.model_name.lower()
+                logger.info(f"Loading tokenizer and model for {model_name} ...")
                 
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     device_map="auto",
-                    torch_dtype="auto"
+                    torch_dtype=torch.bfloat16 # Optimal for Llama 3.1
                 )
+                config = AutoConfig.from_pretrained(model_name)
+                logger.info("Loaded model config:")
+                logger.info(config)
+
+                # Optionally, print specific fields
+                logger.info(f"Model type: {config.model_type}")
+                logger.info(f"Model name: {config._name_or_path}")
+                logger.info(f"Number of hidden layers: {getattr(config, 'num_hidden_layers', 'N/A')}")
+                logger.info(f"Model size (hidden size): {getattr(config, 'hidden_size', 'N/A')}")
                 
                 # Add padding token if needed
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
                 
-            def generate(self, messages, **kwargs):
-                """Generate a response using the local model."""
-                # Handle different input formats
+            def generate(self, messages, tools=None, tool_choice=None, **kwargs):
+                """Generate a response using the local model, with native tool support."""
+                # Unify input handling to always use the chat template
                 if isinstance(messages, str):
-                    prompt = messages
-                elif isinstance(messages, list):
-                    if len(messages) > 0 and isinstance(messages[0], dict):
-                        prompt = messages[0].get('content', str(messages))
-                    else:
-                        prompt = str(messages)
-                else:
-                    prompt = str(messages)
+                    # Wrap a single string prompt into the standard user role format
+                    messages = [{"role": "user", "content": messages}]
+                elif not isinstance(messages, list):
+                    # Fallback for other unexpected formats
+                    messages = [{"role": "user", "content": str(messages)}]
+                
+                # Apply the chat template to format the conversation correctly.
+                prompt = self.tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                )
                 
                 # Tokenize and generate
                 inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+
+                # Prepare generation arguments, including for native tool calling
+                generation_kwargs = {
+                    "max_new_tokens": getattr(self.config, "max_tokens", 256) if self.config else 256,
+                    "temperature": getattr(self.config, "temperature", 0.7) if self.config else 0.7,
+                    "top_p": getattr(self.config, "top_p", 0.9) if self.config else 0.9,
+                    "repetition_penalty": getattr(self.config, "repetition_penalty", 1.05) if self.config else 1.05,
+                    "do_sample": getattr(self.config, "do_sample", True) if self.config else True,
+                    "pad_token_id": self.tokenizer.eos_token_id
+                }
+                if self.supports_native_tools and tools:
+                    generation_kwargs["tools"] = tools
+                    if tool_choice:
+                        generation_kwargs["tool_choice"] = tool_choice
                 
                 with torch.no_grad():
                     outputs = self.model.generate(
                         **inputs,
-                        max_new_tokens=kwargs.get("max_tokens", 500),
-                        temperature=kwargs.get("temperature", 0.7),
-                        do_sample=True,
-                        pad_token_id=self.tokenizer.eos_token_id
+                        **generation_kwargs
                     )
                 
-                # Decode only the new tokens
-                response = self.tokenizer.decode(
+                # Decode only the new tokens for the text response
+                response_text = self.tokenizer.decode(
                     outputs[0][len(inputs.input_ids[0]):], 
                     skip_special_tokens=True
                 )
-                return response.strip()
+
+                # Extract tool calls if the model output supports it
+                tool_calls = getattr(outputs, "tool_calls", None)
+                
+                return {"text": response_text.strip(), "tool_calls": tool_calls}
                 
             def generate_response(self, prompt, **kwargs):
                 """Legacy method name for backward compatibility."""
@@ -209,9 +260,10 @@ class LLMClientManager:
         llm_config = self.config_manager.config.models.llm
         
         # Based on your config.yaml, model_name is at the top level
-        model_name = getattr(llm_config, 'model_name', 'meta-llama/Meta-Llama-3.1-8B-Instruct')
+        model_name = getattr(llm_config, 'model_name', 'meta-llama/llama-3.1-8b-instruct')
+        local_config = getattr(llm_config, 'local', None) # Use None for missing config
         
-        return LocalLLMClient(model_name=model_name)
+        return LocalLLMClient(model_name=model_name, local_config=local_config)
     
     def _create_mock_client(self):
         """Create a mock client for testing."""

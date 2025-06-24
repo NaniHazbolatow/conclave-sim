@@ -14,6 +14,26 @@ from dataclasses import dataclass
 
 logger = logging.getLogger("conclave.llm")
 
+def _build_prompt_for_tools(messages: List[Dict], tools: List[Dict], tool_choice: Optional[str]) -> str:
+    """Constructs a detailed prompt for the LLM to invoke a tool via JSON output."""
+    tool_definitions = json.dumps(tools, indent=2)
+    prompt = (
+        "You are a helpful assistant with access to a set of tools. "
+        "To use a tool, you must respond *only* with a valid JSON object that conforms to the tool's schema. "
+        "Do not include any other text, explanations, or conversational filler in your response. "
+        "Your entire response must be the JSON object for the tool call.\n\n"
+        f"Here are the available tools:\n{tool_definitions}\n\n"
+    )
+    if tool_choice:
+        prompt += f"You must use the tool named '{tool_choice}'.\n\n"
+    
+    # Append conversation history
+    for message in messages:
+        prompt += f"{message['role']}: {message['content']}\n"
+    
+    prompt += "assistant:"
+    return prompt
+
 @dataclass
 class ToolCallResult:
     """Standardized result from tool calling."""
@@ -194,112 +214,104 @@ class SimplifiedToolCaller:
         
         self.logger.info(f"Initialized SimplifiedToolCaller for {self.model_name} with prompt-based strategy")
     
-    def call_tool(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
-        """Call a tool using prompt-based approach with retry mechanism."""
+    def _call_tool_with_prompt(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
+        """Calls a tool using the legacy prompt-based approach with retries."""
+        self.logger.info("Attempting to call tool using prompt-based strategy.")
         
-        # Log the initial request
-        self.logger.debug(f"Tool call request - Tool: {tool_choice}, Model: {self.model_name}")
-        
-        for attempt in range(self.max_retries + 1):
-            if attempt > 0:
-                self.logger.info(f"Retry attempt {attempt}/{self.max_retries} for {self.model_name}")
-                if self.retry_delay > 0:
-                    time.sleep(self.retry_delay)
-            
+        prompt = _build_prompt_for_tools(messages, tools, tool_choice)
+
+        for i in range(self.max_retries):
             try:
-                # Create prompt-based tool calling request
-                prompt_messages = self._create_tool_prompt(messages, tools, tool_choice)
-                
-                # Call the LLM
-                response_text = self.llm_client.generate(prompt_messages)
-                self.logger.debug(f"LLM response: {response_text}")
-                
-                # Parse the response
-                result = JSONParser.parse_tool_response(response_text)
-                
-                if result.success:
-                    # Validate tool choice if specified
-                    if tool_choice and result.function_name != tool_choice:
-                        self.logger.warning(f"LLM chose function '{result.function_name}' but '{tool_choice}' was expected")
-                        # Still consider it successful if parsing worked
-                    
-                    if attempt > 0:
-                        self.logger.info(f"Tool calling succeeded on retry attempt {attempt}")
-                    return result
+                # The generate method now returns a dict, we need the 'text' part
+                response_data = self.llm_client.generate(prompt)
+                raw_response = response_data.get("text", "")
+
+                if not raw_response.strip():
+                    self.logger.warning(f"Attempt {i+1}/{self.max_retries}: LLM returned an empty response.")
+                    time.sleep(self.retry_delay * (i + 1))
+                    continue
+
+                # Use the JSONParser to extract the tool call from the text
+                parsed_result = JSONParser.parse_tool_response(raw_response)
+
+                if parsed_result.success:
+                    self.logger.info("Successfully parsed tool call using prompt-based strategy.")
+                    return parsed_result
                 else:
-                    self.logger.warning(f"Failed to parse tool response on attempt {attempt + 1}: {result.error}")
-                    
+                    self.logger.warning(
+                        f"Attempt {i+1}/{self.max_retries}: Failed to parse tool response. "
+                        f"Error: {parsed_result.error}"
+                    )
+                    time.sleep(self.retry_delay * (i + 1))
+
             except Exception as e:
-                self.logger.error(f"Tool calling attempt {attempt + 1} failed: {e}")
-                result = ToolCallResult(success=False, error=f"Tool calling error: {str(e)}")
-        
-        # All attempts failed
-        self.logger.error(f"All {self.max_retries + 1} tool calling attempts failed for {self.model_name}")
-        return result
-    
-    def _create_tool_prompt(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> List[Dict]:
-        """Create a prompt that instructs the model to respond with JSON tool calls."""
-        
-        # Extract the original prompt content from messages
-        original_content = ""
-        for msg in messages:
-            if msg.get("role") == "user" and "content" in msg:
-                original_content = msg["content"]
-                break
-        
-        # Build tool descriptions
-        tool_descriptions = []
-        for tool in tools:
-            if 'function' in tool:
-                func_def = tool['function']
-                tool_desc = f"- {func_def['name']}: {func_def['description']}"
-                
-                # Add parameter information
-                if 'parameters' in func_def and 'properties' in func_def['parameters']:
-                    params = func_def['parameters']['properties']
-                    required = func_def['parameters'].get('required', [])
-                    
-                    param_list = []
-                    for param_name, param_info in params.items():
-                        param_desc = f"{param_name} ({param_info.get('type', 'any')})"
-                        if param_name in required:
-                            param_desc += " [required]"
-                        if 'description' in param_info:
-                            param_desc += f": {param_info['description']}"
-                        param_list.append(param_desc)
-                    
-                    if param_list:
-                        tool_desc += f"\n  Parameters: {', '.join(param_list)}"
-                
-                tool_descriptions.append(tool_desc)
-        
-        # Create the system prompt that includes the original content AND tool calling instructions
-        tool_prompt = f"""{original_content}
+                self.logger.error(f"An exception occurred during prompt-based tool call attempt {i+1}: {e}")
+                time.sleep(self.retry_delay * (i + 1))
 
----
+        self.logger.error("Failed to get a valid tool call after all retries.")
+        return ToolCallResult(
+            success=False,
+            error="Failed to get a valid tool call after multiple retries.",
+            strategy_used="prompt_based"
+        )
 
-Based on the above context and instructions, you must respond with a function call in JSON format.
+    def _call_tool_natively(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
+        """Calls a tool using the modern, native approach, with a prompt-based fallback."""
+        self.logger.info("Attempting to call tool using native strategy.")
+        response = self.llm_client.generate(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice
+        )
 
-Available functions:
-{chr(10).join(tool_descriptions)}
+        tool_calls = response.get("tool_calls")
+        raw_text_response = response.get("text", "")
 
-IMPORTANT: You must respond with a JSON object in exactly this format:
-{{
-  "function_name": "name_of_function_to_call",
-  "arguments": {{
-    "parameter1": "value1",
-    "parameter2": "value2"
-  }}
-}}
+        if tool_calls:
+            self.logger.info("Successfully received tool call via native strategy.")
+            # Assuming the first tool call is the one we want
+            first_call = tool_calls[0]
+            function_info = first_call.get("function")
+            if not function_info:
+                return ToolCallResult(success=False, error="Tool call did not contain function info.")
 
-"""
+            return ToolCallResult(
+                success=True,
+                function_name=function_info.get("name"),
+                arguments=json.loads(function_info.get("arguments", "{}")),
+                raw_response=raw_text_response,
+                strategy_used="native"
+            )
         
-        if tool_choice:
-            tool_prompt += f"You MUST use the function '{tool_choice}'. Do not use any other function.\n\n"
+        # --- NATIVE FALLBACK LOGIC ---
+        self.logger.warning(
+            "Native tool call failed: Model did not return a tool_calls object. "
+            "Attempting to parse the text response as a fallback."
+        )
         
-        tool_prompt += "Respond ONLY with the JSON object, no additional text or explanation."
-        
-        # Create a single message with the combined prompt
-        prompt_messages = [{"role": "user", "content": tool_prompt}]
-        
-        return prompt_messages
+        # If the model didn't use the tool, it might have put the JSON in the text
+        if raw_text_response:
+            parsed_result = JSONParser.parse_tool_response(raw_text_response)
+            if parsed_result.success:
+                self.logger.info("Successfully parsed tool call from text response as a native fallback.")
+                # Override strategy to indicate it was a fallback
+                parsed_result.strategy_used = "native_fallback"
+                return parsed_result
+
+        # If both native call and text parsing fail
+        return ToolCallResult(
+            success=False, 
+            error="Model did not return a tool_calls object, and no valid JSON was found in the text response.",
+            raw_response=raw_text_response
+        )
+
+    def call_tool(self, messages: List[Dict], tools: List[Dict], tool_choice: str = None) -> ToolCallResult:
+        """Call a tool using the best available strategy."""
+        if getattr(self.llm_client, 'supports_native_tools', False):
+            return self._call_tool_natively(messages, tools, tool_choice)
+        else:
+            self.logger.warning("LLM client does not support native tools. Falling back to prompt-based strategy.")
+            return self._call_tool_with_prompt(messages, tools, tool_choice)
+
+class ToolExecutor:
+    """Executes a tool call and returns the result."""
