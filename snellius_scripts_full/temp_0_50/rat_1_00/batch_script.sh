@@ -1,4 +1,5 @@
 #!/bin/bash
+#SBATCH --job-name=temp_0_50_rat_1_00
 #SBATCH --ntasks=1
 #SBATCH --partition=gpu_h100
 #SBATCH --gres=gpu:1
@@ -7,6 +8,8 @@
 #SBATCH --time=04:00:00
 #SBATCH --output=run_%A_%a.out
 #SBATCH --error=run_%A_%a.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=salome.poulain@student.uva.nl
 
 cd "$SLURM_SUBMIT_DIR" || cd "$(dirname "$0")"
 
