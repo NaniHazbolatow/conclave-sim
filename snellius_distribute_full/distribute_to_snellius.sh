@@ -42,7 +42,7 @@ echo "Starting distribution of temperature folders to Snellius accounts..."
 echo "Base directory: $BASE_DIR"
 echo ""
 
-# Function to copy folder to account using sshpass
+# Function to copy folder to account using sshpass and rsync
 copy_to_account() {
     local temp_folder="$1"
     local username="$2"
@@ -50,15 +50,17 @@ copy_to_account() {
     local destination_path="/home/$username/"
     
     echo "========================================="
-    echo "Copying $temp_folder to $username@$SNELLIUS_HOST"
+    echo "Syncing $temp_folder to $username@$SNELLIUS_HOST"
     echo "Destination: $destination_path"
     echo "========================================="
     
-    # Check if sshpass is installed
+    # Check if sshpass and rsync are installed
     if ! command -v sshpass &> /dev/null; then
-        echo "ERROR: sshpass is not installed. Please install it first:"
-        echo "  macOS: brew install sshpass"
-        echo "  Linux: apt-get install sshpass (or equivalent)"
+        echo "ERROR: sshpass is not installed. Please install it first."
+        return 1
+    fi
+    if ! command -v rsync &> /dev/null; then
+        echo "ERROR: rsync is not installed. Please install it first."
         return 1
     fi
     
@@ -71,40 +73,16 @@ copy_to_account() {
         return 1
     fi
     
-    # Create destination directory on remote server
-    echo "  Creating destination directory: $destination_path"
-    if sshpass -p "$password" ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" \
-        "mkdir -p $destination_path && echo 'Directory created successfully'" 2>/dev/null; then
-        echo "  ✅ Directory ready"
+    # Sync the folder using rsync
+    echo "  Syncing files for $temp_folder (this may take a while)..."
+    # Using -a (archive), -v (verbose), --progress.
+    # This efficiently syncs the directory, overwriting remote files if the local ones are newer.
+    if sshpass -p "$password" rsync -av --progress -e "ssh -o StrictHostKeyChecking=no" \
+        "$BASE_DIR/$temp_folder" "$username@$SNELLIUS_HOST:$destination_path"; then
+        echo "  ✅ Sync completed successfully"
+        return 0
     else
-        echo "  ❌ Could not create directory"
-        return 1
-    fi
-    
-    # Copy the folder
-    echo "  Transferring $temp_folder (this may take a while)..."
-    if sshpass -p "$password" scp -r -o StrictHostKeyChecking=no \
-        "$BASE_DIR/$temp_folder" "$username@$SNELLIUS_HOST:$destination_path" 2>/dev/null; then
-        echo "  ✅ Transfer completed successfully"
-        
-        # Verify the transfer
-        echo "  Verifying transfer..."
-        remote_files=$(sshpass -p "$password" ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" \
-            "find $destination_path/$temp_folder -type f | wc -l" 2>/dev/null)
-        local_files=$(find "$BASE_DIR/$temp_folder" -type f | wc -l)
-        
-        echo "  Local files: $local_files"
-        echo "  Remote files: $remote_files"
-        
-        if [ "$remote_files" -eq "$local_files" ] && [ "$remote_files" -gt 0 ]; then
-            echo "  ✅ Verification passed - all files transferred correctly"
-            return 0
-        else
-            echo "  ⚠️  File count mismatch - transfer may be incomplete"
-            return 1
-        fi
-    else
-        echo "  ❌ Transfer failed"
+        echo "  ❌ Sync failed"
         return 1
     fi
 }
@@ -113,26 +91,36 @@ copy_to_account() {
 copy_to_account_with_keys() {
     local temp_folder="$1"
     local username="$2"
-    local destination_path="/home/$username/simulation_runs/"
+    local destination_path="/home/$username/" # Corrected path to be consistent
     
-    echo "Copying $temp_folder to $username@$SNELLIUS_HOST:$destination_path (using SSH keys)"
-    
-    # Create destination directory
-    ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" \
-        "mkdir -p $destination_path" 2>/dev/null
-    
-    # Copy the folder
-    scp -r -o StrictHostKeyChecking=no \
-        "$BASE_DIR/$temp_folder" "$username@$SNELLIUS_HOST:$destination_path"
-    
-    if [ $? -eq 0 ]; then
-        echo "  ✅ Successfully copied $temp_folder to $username"
+    echo "========================================="
+    echo "Syncing $temp_folder to $username@$SNELLIUS_HOST (using SSH keys)"
+    echo "Destination: $destination_path"
+    echo "========================================="
+
+    if ! command -v rsync &> /dev/null; then
+        echo "ERROR: rsync is not installed. Please install it first."
+        return 1
+    fi
+
+    # Test connection
+    echo "  Testing connection to $username@$SNELLIUS_HOST..."
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$username@$SNELLIUS_HOST" "echo 'Connection test successful'" 2>/dev/null; then
+        echo "  ✅ Connection test passed"
     else
-        echo "  ❌ Failed to copy $temp_folder to $username"
+        echo "  ❌ Connection failed - check SSH key setup"
         return 1
     fi
     
-    echo ""
+    # Sync the folder using rsync
+    echo "  Syncing files for $temp_folder (this may take a while)..."
+    if rsync -av --progress -e "ssh -o StrictHostKeyChecking=no" \
+        "$BASE_DIR/$temp_folder" "$username@$SNELLIUS_HOST:$destination_path"; then
+        echo "  ✅ Sync completed successfully"
+    else
+        echo "  ❌ Sync failed"
+        return 1
+    fi
 }
 
 # Check what method to use
