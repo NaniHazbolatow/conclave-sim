@@ -6,8 +6,8 @@
 #SBATCH --mem=80G
 #SBATCH --cpus-per-task=8
 #SBATCH --time=04:00:00
-#SBATCH --output=run_%A_%a.out
-#SBATCH --error=run_%A_%a.err
+#SBATCH --output=run_%a/snellius_logs/run_%A_%a.out
+#SBATCH --error=run_%a/snellius_logs/run_%A_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=salome.poulain@student.uva.nl
 
@@ -26,8 +26,18 @@ RAT_FOLDER_NAME=$(basename "$CWD")
 TEMP_FOLDER_NAME=$(basename $(dirname "$CWD"))
 RATIONALITY=$(echo "$RAT_FOLDER_NAME" | cut -d'_' -f2- | sed 's/_/./')
 TEMPERATURE=$(echo "$TEMP_FOLDER_NAME" | cut -d'_' -f2- | sed 's/_/./')
-THIS_RUN_NUM=$((BATCH_START_RUN + SLURM_ARRAY_TASK_ID - 1))
+
+# Debug: Show what we're calculating
+echo "DEBUG: BATCH_START_RUN = $BATCH_START_RUN"
+echo "DEBUG: SLURM_ARRAY_TASK_ID = $SLURM_ARRAY_TASK_ID"
+
+# Fixed calculation: SLURM_ARRAY_TASK_ID IS the run number when array starts from BATCH_START
+THIS_RUN_NUM=$SLURM_ARRAY_TASK_ID
 OUTPUT_DIR="run${THIS_RUN_NUM}"
+
+echo "DEBUG: Using THIS_RUN_NUM = $THIS_RUN_NUM (directly from SLURM_ARRAY_TASK_ID)"
+echo "DEBUG: OUTPUT_DIR = $OUTPUT_DIR"
+
 mkdir -p "$OUTPUT_DIR/snellius_logs"
 
 # ---- Load modules and set env variables (unchanged) ----
@@ -42,9 +52,9 @@ export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=8
 
 # ---- Start GPU monitoring in background ----
-GPU_MONITOR_LOG="gpu_monitor_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.csv"
-GPU_INITIAL_LOG="gpu_initial_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
-GPU_FINAL_LOG="gpu_final_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
+GPU_MONITOR_LOG="$OUTPUT_DIR/snellius_logs/gpu_monitor_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.csv"
+GPU_INITIAL_LOG="$OUTPUT_DIR/snellius_logs/gpu_initial_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
+GPU_FINAL_LOG="$OUTPUT_DIR/snellius_logs/gpu_final_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 
 nvidia-smi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu,power.draw --format=csv --loop=10 > "$GPU_MONITOR_LOG" &
 MONITOR_PID=$!
@@ -62,10 +72,6 @@ python ../../conclave-sim/simulations/run.py \
 kill $MONITOR_PID
 nvidia-smi > "$GPU_FINAL_LOG"
 
-# ---- Move all logs into the output directory ----
-mv "$GPU_MONITOR_LOG"   "$OUTPUT_DIR/snellius_logs/" 2>/dev/null || true
-mv "$GPU_INITIAL_LOG"   "$OUTPUT_DIR/snellius_logs/" 2>/dev/null || true
-mv "$GPU_FINAL_LOG"     "$OUTPUT_DIR/snellius_logs/" 2>/dev/null || true
-
 sync
+echo "Outputs for run $THIS_RUN_NUM are in $OUTPUT_DIR"
 echo "Outputs for run $THIS_RUN_NUM are in $OUTPUT_DIR"

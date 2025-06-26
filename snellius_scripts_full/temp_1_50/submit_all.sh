@@ -10,7 +10,7 @@ ARRAY_SIZE="$1"
 for dir in rat_*; do
     if [ -d "$dir" ] && [ -f "$dir/submit_batch.sh" ]; then
         echo "Submitting in $dir..."
-        (cd "$dir" && sbatch submit_batch.sh "$ARRAY_SIZE")
+        (cd "$dir" && bash submit_batch.sh "$ARRAY_SIZE")
     else
         echo "Skipping $dir (not a directory or missing submit_batch.sh)"
     fi

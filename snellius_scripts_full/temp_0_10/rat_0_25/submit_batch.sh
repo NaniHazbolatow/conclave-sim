@@ -1,10 +1,7 @@
 #!/bin/bash
-#SBATCH --time=00:01:00
-#SBATCH --cpus-per-task=1
-#SBATCH --partition=cbuild
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=salome.poulain@student.uva.nl
 
+# Script to submit a batch of jobs to SLURM
+# Usage: bash submit_batch.sh <array_size>
 
 if [ -z "$1" ]; then
     echo "Usage: bash submit_new_batch.sh <array_size>"
@@ -18,6 +15,8 @@ if [[ -z "$LAST_RUN" ]]; then
 fi
 
 BATCH_START=$((LAST_RUN + 1))
+echo "Found existing runs: $(find . -maxdepth 1 -type d -regex './run[0-9]+' | sed 's|./run||' | sort -n | tr '\n' ' ')"
+echo "LAST_RUN detected: $LAST_RUN"
 echo "Launching array with BATCH_START_RUN = $BATCH_START"
 
 for ((i=0; i<ARRAY_SIZE; i++)); do
@@ -28,9 +27,10 @@ done
 export BATCH_START_RUN=$BATCH_START
 
 # Launch job array, logging directly to the correct folder per array task
+# Use array starting from BATCH_START to match run directory numbers
 jobid=$(sbatch \
     --export=ALL,BATCH_START_RUN \
-    --array=1-$ARRAY_SIZE \
+    --array=$BATCH_START-$((BATCH_START+ARRAY_SIZE-1)) \
     --output=run%a/snellius_logs/run_%A_%a.out \
     --error=run%a/snellius_logs/run_%A_%a.err \
     batch_script.sh | awk '{print $4}')

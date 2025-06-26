@@ -3,11 +3,11 @@
 
 # Active predefined group - determines participants and simulation scope
 groups:
-  active: small                      # Options: small, medium, large, xlarge, full
+  active: xlarge                      # Options: small, medium, large, xlarge, full
 
 simulation:
   # Core simulation parameters
-  max_rounds: 20                      # Range: 1-50 (simulation stops after this many rounds)
+  max_rounds: 50                      # Range: 1-50 (simulation stops after this many rounds)
   enable_parallel: true               # Enable parallel processing for better performance
   
   # Agent behavior parameters
