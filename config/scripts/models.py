@@ -361,10 +361,11 @@ class RefactoredConfig(BaseModel):
                         content
                     )
                 
-                if hasattr(self.simulation, 'temperature'):
+                # Update LLM temperature (it's under models.llm.temperature, not simulation.temperature)
+                if hasattr(self.models, 'llm') and hasattr(self.models.llm, 'temperature'):
                     content = re.sub(
                         r'(\s+temperature:\s+)[\d.]+', 
-                        rf'\g<1>{self.simulation.temperature}',
+                        rf'\g<1>{self.models.llm.temperature}',
                         content
                     )
                 

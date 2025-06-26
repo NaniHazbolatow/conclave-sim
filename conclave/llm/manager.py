@@ -211,9 +211,10 @@ class LLMClientManager:
 
         
         class LocalLLMClient:
-            def __init__(self, model_name, local_config):
+            def __init__(self, model_name, local_config, llm_config):
                 self.model_name = model_name
                 self.config = local_config
+                self.llm_config = llm_config
                 # Check for native tool support based on model name
                 self.supports_native_tools = "llama-3.1" in self.model_name.lower()
                 logger.info(f"Loading tokenizer and model for {model_name} ...")
@@ -287,7 +288,7 @@ class LLMClientManager:
                 # Prepare generation arguments (NO tools/tool_choice here!)
                 generation_kwargs = {
                     "max_new_tokens": getattr(self.config, "max_tokens", 256) if self.config else 256,
-                    "temperature": getattr(self.config, "temperature", 0.7) if self.config else 0.7,
+                    "temperature": self.llm_config.temperature if hasattr(self.llm_config, "temperature") else (getattr(self.config, "temperature", 0.7) if self.config else 0.7),
                     "top_p": getattr(self.config, "top_p", 0.9) if self.config else 0.9,
                     "repetition_penalty": getattr(self.config, "repetition_penalty", 1.05) if self.config else 1.05,
                     "do_sample": getattr(self.config, "do_sample", True) if self.config else True,
@@ -332,7 +333,7 @@ class LLMClientManager:
         model_name = getattr(llm_config, 'model_name', 'meta-llama/llama-3.1-8b-instruct')
         local_config = getattr(llm_config, 'local', None) # Use None for missing config
         
-        return LocalLLMClient(model_name=model_name, local_config=local_config)
+        return LocalLLMClient(model_name=model_name, local_config=local_config, llm_config=llm_config)
     
     def _create_mock_client(self):
         """Create a mock client for testing."""

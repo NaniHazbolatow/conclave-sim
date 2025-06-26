@@ -141,9 +141,9 @@ def main():
     
     # Use custom output directory if specified
     if args.output_dir:
-        base_output_dir = Path(args.output_dir)
+        base_output_dir = Path(args.output_dir).resolve()
     else:
-        base_output_dir = project_root / "simulations" / "outputs" / timestamp
+        base_output_dir = (project_root / "simulations" / "outputs" / timestamp).resolve()
     # print(f"discussion_round.py: base_output_dir = {base_output_dir}")  # DEBUG PRINT
 
     logs_dir = base_output_dir / "logs"
