@@ -141,149 +141,212 @@ collect_from_account_with_keys() {
 
 # Function to analyze results remotely without downloading
 analyze_remotely() {
-    local temp_folder="$1"
-    local username="$2"
-    local password="$3" # Optional, for sshpass
-    local auth_type="$4" # "password" or "key"
-
-    # echo "========================================="
-    # echo "Analyzing $temp_folder on $username@$SNELLIUS_HOST"
+    local username="$1"
+    local password="$2" # Optional, for sshpass
+    local auth_type="$3" # "password" or "key"
 
     # Define the remote script as a here document.
     # Using a quoted EOF ('EOF') prevents any local variable expansion.
-    # The script is passed to the remote shell, with username and temp_folder as arguments $1 and $2.
-    read -r -d '' remote_script <<'EOF'
-cd "/home/$1/$2" || { echo "ERROR: Could not cd to /home/$1/$2 on host $(hostname)"; exit 1; }
+    # The script is passed to the remote shell, with username as an argument $1.
+    read -r -d '' remote_script <<-'EOF'
+# This script runs on the remote server. $1 is the username.
+cd "/home/$1" || { echo "ERROR: Could not cd to /home/$1 on host $(hostname)"; exit 1; }
 
-echo ''
-echo "--------------------------------------------------------------------------------"
-# Note: We use $2 and $1 for temp_folder and username passed as arguments
-echo "Analysis for $2 on account $1"
-printf "%-20s | %-10s | %-10s | %-10s | %s
-" "Parameter Setting" "Submitted" "Ran" "Finished" "Status"
-printf "%-20s | %-10s | %-10s | %-10s | %s
-" "-------------------" "----------" "----------" "----------" "----------"
-
-# Find all directories matching the rat_* pattern
-find . -maxdepth 1 -type d -name "rat_*" | sort | while read RAT_DIR; do
-    # Use a subshell to change directory safely
-    (
-        cd "$RAT_DIR" || exit
-
-        # Get a list of all run directories, sorted numerically.
-        ALL_RUN_DIRS=$(find . -maxdepth 1 -type d -name "run[0-9]*" | sort -V)
+# Find all temp directories for the user and loop through them
+find . -maxdepth 1 -type d -name "temp_*" | sort | while read TEMP_DIR; do
+    ( # Use a subshell for safety when changing directories
+        cd "$TEMP_DIR" || exit
         
-        if [ -z "$ALL_RUN_DIRS" ]; then
-            TOTAL_RUN_COUNT=0
-        else
-            TOTAL_RUN_COUNT=$(echo "$ALL_RUN_DIRS" | wc -l | tr -d ' ')
-        fi
+        # Extract the base name of the temp directory, e.g., "temp_0_10"
+        TEMP_NAME=$(basename "$TEMP_DIR")
 
-        SUCCESSFUL_RUN_DIRS=""
-        FINISHED_RUN_DIRS=""
-        for RUNDIR in $ALL_RUN_DIRS; do
-            # Count items inside the run directory, ignoring .DS_Store on macOS
-            NUM_ITEMS=$(find "$RUNDIR" -mindepth 1 -maxdepth 1 -not -name ".DS_Store" | wc -l)
-            
-            IS_FAILED=false
-            # A run is considered failed if it's empty or contains ONLY the snellius_logs directory.
-            if [ "$NUM_ITEMS" -eq 0 ]; then
-                IS_FAILED=true
-            elif [ "$NUM_ITEMS" -eq 1 ] && [ -d "$RUNDIR/snellius_logs" ]; then
-                IS_FAILED=true
-            fi
+        echo ""
+        echo "--------------------------------------------------------------------------------"
+        # Note: We use $TEMP_NAME and $1 for temp_folder and username passed as arguments
+        echo "Analysis for $TEMP_NAME on account $1"
+        printf "%-20s | %10s | %10s | %10s | %s\n" "Parameter Setting" "Submitted" "Ran" "Finished" "Status"
+        printf "%-20s | %10s | %10s | %10s | %s\n" "-------------------" "----------" "----------" "----------" "----------"
 
-            if [ "$IS_FAILED" = false ]; then
-                # It's a successful run, add it to our list.
-                if [ -z "$SUCCESSFUL_RUN_DIRS" ]; then
-                    SUCCESSFUL_RUN_DIRS="$RUNDIR"
+        # Find all directories matching the rat_* pattern within the temp directory
+        find . -maxdepth 1 -type d -name "rat_*" | sort | while read RAT_DIR; do
+            ( # Use another subshell for each rat directory
+                cd "$RAT_DIR" || exit
+
+                # Get a list of all run directories, sorted numerically.
+                ALL_RUN_DIRS=$(find . -maxdepth 1 -type d -name "run[0-9]*" | sort -V)
+                
+                if [ -z "$ALL_RUN_DIRS" ]; then
+                    TOTAL_RUN_COUNT=0
                 else
-                    SUCCESSFUL_RUN_DIRS=$(printf "%s
-%s" "$SUCCESSFUL_RUN_DIRS" "$RUNDIR")
+                    TOTAL_RUN_COUNT=$(echo "$ALL_RUN_DIRS" | wc -l | tr -d ' ')
                 fi
 
-                # Now, check if this successful run is also a finished run
-                if [ -f "$RUNDIR/results/simulation_summary.json" ]; then
-                    if [ -z "$FINISHED_RUN_DIRS" ]; then
-                        FINISHED_RUN_DIRS="$RUNDIR"
+                SUCCESSFUL_RUN_DIRS=""
+                FINISHED_RUN_DIRS=""
+                for RUNDIR in $ALL_RUN_DIRS; do
+                    # Count items inside the run directory, ignoring .DS_Store on macOS
+                    NUM_ITEMS=$(find "$RUNDIR" -mindepth 1 -maxdepth 1 -not -name ".DS_Store" | wc -l)
+                    
+                    IS_FAILED=false
+                    # A run is considered failed if it's empty or contains ONLY the snellius_logs directory.
+                    if [ "$NUM_ITEMS" -eq 0 ]; then
+                        IS_FAILED=true
+                    elif [ "$NUM_ITEMS" -eq 1 ] && [ -d "$RUNDIR/snellius_logs" ]; then
+                        IS_FAILED=true
+                    fi
+
+                    if [ "$IS_FAILED" = false ]; then
+                        # It's a successful run, add it to our list.
+                        if [ -z "$SUCCESSFUL_RUN_DIRS" ]; then
+                            SUCCESSFUL_RUN_DIRS="$RUNDIR"
+                        else
+                            SUCCESSFUL_RUN_DIRS=$(printf "%s\n%s" "$SUCCESSFUL_RUN_DIRS" "$RUNDIR")
+                        fi
+
+                        # Now, check if this successful run is also a finished run
+                        if [ -f "$RUNDIR/results/simulation_summary.json" ]; then
+                            if [ -z "$FINISHED_RUN_DIRS" ]; then
+                                FINISHED_RUN_DIRS="$RUNDIR"
+                            else
+                                FINISHED_RUN_DIRS=$(printf "%s\n%s" "$FINISHED_RUN_DIRS" "$RUNDIR")
+                            fi
+                        fi
+                    fi
+                done
+
+                # Count the successful runs
+                if [ -z "$SUCCESSFUL_RUN_DIRS" ]; then
+                    COMPLETED_RUN_COUNT=0
+                else
+                    COMPLETED_RUN_COUNT=$(echo "$SUCCESSFUL_RUN_DIRS" | wc -l | tr -d ' ')
+                fi
+
+                # Count the finished runs
+                if [ -z "$FINISHED_RUN_DIRS" ]; then
+                    FINISHED_RUN_COUNT=0
+                else
+                    FINISHED_RUN_COUNT=$(echo "$FINISHED_RUN_DIRS" | wc -l | tr -d ' ')
+                fi
+
+                # Check if the successful runs are sequentially numbered
+                NEEDS_RENUMBERING=false
+                if [ "$COMPLETED_RUN_COUNT" -gt 0 ]; then
+                    CURRENT_INDEX=1
+                    for DIR in $SUCCESSFUL_RUN_DIRS; do
+                        # Extract number from directory name like './run12' -> '12'
+                        DIR_NUM=$(echo "$DIR" | sed 's|./run||')
+                        if [ "$DIR_NUM" -ne "$CURRENT_INDEX" ]; then
+                            NEEDS_RENUMBERING=true
+                            break
+                        fi
+                        CURRENT_INDEX=$((CURRENT_INDEX + 1))
+                    done
+                fi
+
+                STATUS="Sequential"
+                if [ "$NEEDS_RENUMBERING" = true ]; then
+                    STATUS="Needs Renumbering"
+                fi
+
+                # Clean up the directory name for display
+                DISPLAY_NAME=$(basename "$RAT_DIR")
+                printf "%-20s | %10s | %10s | %10s | %s\n" "$DISPLAY_NAME" "$TOTAL_RUN_COUNT" "$COMPLETED_RUN_COUNT" "$FINISHED_RUN_COUNT" "$STATUS"
+                
+                # Add a line for aggregation purposes, prefixed with AGG_DATA:
+                echo "AGG_DATA:$TEMP_NAME/$DISPLAY_NAME;$TOTAL_RUN_COUNT;$COMPLETED_RUN_COUNT;$FINISHED_RUN_COUNT"
+            )
+        done
+        echo "--------------------------------------------------------------------------------"
+
+        # Check for errors in failed runs
+        echo ""
+        echo "--> Checking for errors in failed runs for $TEMP_NAME..."
+        find . -maxdepth 1 -type d -name "rat_*" | sort | while read RAT_DIR; do
+            (
+                cd "$RAT_DIR" || exit
+                
+                ALL_RUN_DIRS=$(find . -maxdepth 1 -type d -name "run[0-9]*" | sort -V)
+                if [ -z "$ALL_RUN_DIRS" ]; then continue; fi
+
+                RAT_NAME=$(basename "$RAT_DIR")
+                FAILED_RUN_LOGS=""
+                FAILED_COUNT=0
+                
+                for RUNDIR in $ALL_RUN_DIRS; do
+                    NUM_ITEMS=$(find "$RUNDIR" -mindepth 1 -maxdepth 1 -not -name ".DS_Store" | wc -l)
+                    IS_FAILED=false
+                    if [ "$NUM_ITEMS" -eq 0 ]; then IS_FAILED=true; fi
+                    if [ "$NUM_ITEMS" -eq 1 ] && [ -d "$RUNDIR/snellius_logs" ]; then IS_FAILED=true; fi
+
+                    if [ "$IS_FAILED" = true ]; then
+                        FAILED_COUNT=$((FAILED_COUNT + 1))
+                        if [ "$FAILED_COUNT" -le 3 ]; then
+                            if [ -d "$RUNDIR/snellius_logs" ]; then
+                                LOG_FILE=$(find "$RUNDIR/snellius_logs" -type f -print -quit)
+                                if [ -n "$LOG_FILE" ]; then
+                                    FAILED_RUN_LOGS+=$(printf "\n--- Log for %s/%s ---\n" "$RAT_NAME" "$(basename "$RUNDIR")")
+                                    FAILED_RUN_LOGS+=$(tail -n 10 "$LOG_FILE")
+                                else
+                                    DIAGNOSIS_MSG="\n--- No log file found in %s/%s/snellius_logs ---\n"
+                                    DIAGNOSIS_MSG+="    This suggests the job failed at the scheduler level, before the simulation script started.\n"
+                                    DIAGNOSIS_MSG+="    To investigate, log into the account (%s) and check Slurm's accounting logs.\n"
+                                    DIAGNOSIS_MSG+="    Use 'sacct' to find the job's status and exit code. You may need the Job ID from submission.\n"
+                                    DIAGNOSIS_MSG+="    Example: sacct -j <JOB_ID> --format=JobID,JobName,State,ExitCode,Start,End"
+                                    FAILED_RUN_LOGS+=$(printf "$DIAGNOSIS_MSG" "$RAT_NAME" "$(basename "$RUNDIR")" "$1")
+                                fi
+                            else
+                                FAILED_RUN_LOGS+=$(printf "\n--- Directory %s/%s/snellius_logs not found ---\n" "$RAT_NAME" "$(basename "$RUNDIR")")
+                            fi
+                        fi
+                    fi
+                done
+
+                if [ "$FAILED_COUNT" -gt 0 ]; then
+                    echo "    Found $FAILED_COUNT failed runs in $RAT_NAME. Showing diagnostics for up to 3:"
+                    if [ -n "$FAILED_RUN_LOGS" ]; then
+                        echo -e "$FAILED_RUN_LOGS"
+                        if [ "$FAILED_COUNT" -gt 3 ]; then
+                            echo "    (and $(($FAILED_COUNT - 3)) more...)"
+                        fi
                     else
-                        FINISHED_RUN_DIRS=$(printf "%s
-%s" "$FINISHED_RUN_DIRS" "$RUNDIR")
+                        echo "    (Could not retrieve logs for failed runs for an unknown reason)"
                     fi
                 fi
-            fi
+            )
         done
 
-        # Count the successful runs
-        if [ -z "$SUCCESSFUL_RUN_DIRS" ]; then
-            COMPLETED_RUN_COUNT=0
-        else
-            COMPLETED_RUN_COUNT=$(echo "$SUCCESSFUL_RUN_DIRS" | wc -l | tr -d ' ')
-        fi
-
-        # Count the finished runs
-        if [ -z "$FINISHED_RUN_DIRS" ]; then
-            FINISHED_RUN_COUNT=0
-        else
-            FINISHED_RUN_COUNT=$(echo "$FINISHED_RUN_DIRS" | wc -l | tr -d ' ')
-        fi
-
-        # Check if the successful runs are sequentially numbered
-        NEEDS_RENUMBERING=false
-        if [ "$COMPLETED_RUN_COUNT" -gt 0 ]; then
-            CURRENT_INDEX=1
-            for DIR in $SUCCESSFUL_RUN_DIRS; do
-                # Extract number from directory name like './run12' -> '12'
-                DIR_NUM=$(echo "$DIR" | sed 's|./run||')
-                if [ "$DIR_NUM" -ne "$CURRENT_INDEX" ]; then
-                    NEEDS_RENUMBERING=true
-                    break
-                fi
-                CURRENT_INDEX=$((CURRENT_INDEX + 1))
-            done
-        fi
-
-        STATUS="Sequential"
-        if [ "$NEEDS_RENUMBERING" = true ]; then
-            STATUS="Needs Renumbering"
-        fi
-
-        # Clean up the directory name for display
-        DISPLAY_NAME=$(echo "$RAT_DIR" | sed 's|./||')
-        printf "%-20s | %-10s | %-10s | %-10s | %s
-" "$DISPLAY_NAME" "$TOTAL_RUN_COUNT" "$COMPLETED_RUN_COUNT" "$FINISHED_RUN_COUNT" "$STATUS"
     )
 done
-
-echo "--------------------------------------------------------------------------------"
 EOF
 
+    local output
     # Execute based on auth type
     if [ "$auth_type" == "password" ]; then
         if ! command -v sshpass &> /dev/null; then
-            echo "ERROR: sshpass is not installed. Please install it first."
+            echo "ERROR: sshpass is not installed. Please install it first." >&2
             return 1
         fi
         if ! sshpass -p "$password" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$username@$SNELLIUS_HOST" "echo 'Connection test successful'" > /dev/null 2>&1; then
-            echo "  ❌ Connection failed for $username - check username/password"
+            echo "  ❌ Connection failed for $username - check username/password" >&2
             return 1
         fi
-        # Pipe the script to the remote shell, passing username and temp_folder as arguments
-        sshpass -p "$password" ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" 'bash -s' -- "$username" "$temp_folder" <<< "$remote_script"
+        # Pipe the script to the remote shell, passing username as an argument
+        output=$(sshpass -p "$password" ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" 'bash -s' -- "$username" <<< "$remote_script")
     else # key-based
         if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$username@$SNELLIUS_HOST" "echo 'Connection test successful'" > /dev/null 2>&1; then
-            echo "  ❌ Connection failed for $username - check SSH key setup"
+            echo "  ❌ Connection failed for $username - check SSH key setup" >&2
             return 1
         fi
-        # Pipe the script to the remote shell, passing username and temp_folder as arguments
-        ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" 'bash -s' -- "$username" "$temp_folder" <<< "$remote_script"
+        # Pipe the script to the remote shell, passing username as an argument
+        output=$(ssh -o StrictHostKeyChecking=no "$username@$SNELLIUS_HOST" 'bash -s' -- "$username" <<< "$remote_script")
     fi
 
     if [ $? -ne 0 ]; then
-        echo "  ❌ Analysis failed for $username"
+        echo "  ❌ Analysis failed for $username" >&2
         return 1
     fi
-    # echo "========================================="
+    
+    echo "$output"
     return 0
 }
 
@@ -382,28 +445,40 @@ case $main_choice in
         echo "1) Use passwords (requires sshpass)"
         echo "2) Use SSH keys (more secure, requires key setup)"
         read -p "Enter your choice (1 or 2): " auth_method
+        echo ""
 
+        ALL_REMOTE_OUTPUT=""
         case $auth_method in
             1)
                 echo "Using password authentication for remote analysis..."
-                for temp_folder in "${TEMP_FOLDERS[@]}"; do
-                    username=$(get_username "$temp_folder")
+                for username in "${USERNAMES[@]}"; do
                     password=$(get_password "$username")
                     if [ -n "$username" ] && [ -n "$password" ]; then
-                        analyze_remotely "$temp_folder" "$username" "$password" "password"
+                        echo "================================================================================="
+                        echo "Analyzing account: $username"
+                        echo "================================================================================="
+                        output=$(analyze_remotely "$username" "$password" "password")
+                        if [ $? -eq 0 ]; then
+                            ALL_REMOTE_OUTPUT+="$output\n"
+                        fi
                     else
-                        echo "⚠️  Skipping $temp_folder: username or password not found."
+                        echo "⚠️  Skipping $username: username or password not found."
                     fi
                 done
                 ;;
             2)
                 echo "Using SSH key authentication for remote analysis..."
-                for temp_folder in "${TEMP_FOLDERS[@]}"; do
-                    username=$(get_username "$temp_folder")
+                for username in "${USERNAMES[@]}"; do
                     if [ -n "$username" ]; then
-                        analyze_remotely "$temp_folder" "$username" "" "key"
+                        echo "================================================================================="
+                        echo "Analyzing account: $username"
+                        echo "================================================================================="
+                        output=$(analyze_remotely "$username" "" "key")
+                        if [ $? -eq 0 ]; then
+                            ALL_REMOTE_OUTPUT+="$output\n"
+                        fi
                     else
-                        echo "⚠️  Skipping $temp_folder: username not found."
+                        echo "⚠️  Skipping: username not found."
                     fi
                 done
                 ;;
@@ -413,6 +488,37 @@ case $main_choice in
                 ;;
         esac
         
+        echo ""
+        echo "================================================================================="
+        echo "Per-Account Analysis Summary"
+        echo "================================================================================="
+        echo -e "$ALL_REMOTE_OUTPUT" | grep -v "AGG_DATA:"
+
+        echo ""
+        echo "================================================================================="
+        echo "Combined Analysis Across All Accounts"
+        echo "================================================================================="
+        printf "%-30s | %10s | %10s | %10s\n" "Parameter Setting" "Submitted" "Ran" "Finished"
+        printf "%-30s | %10s | %10s | %10s\n" "------------------------------" "----------" "----------" "----------"
+
+        echo -e "$ALL_REMOTE_OUTPUT" | grep "AGG_DATA:" | sed 's/^AGG_DATA://' | \
+        awk -F';' '
+        {
+            submitted[$1] += $2;
+            ran[$1] += $3;
+            finished[$1] += $4;
+        }
+        END {
+            for (key in submitted) {
+                printf "%s;%d;%d;%d\n", key, submitted[key], ran[key], finished[key];
+            }
+        }' | sort | \
+        awk -F';' '
+        {
+            printf "%-30s | %10s | %10s | %10s\n", $1, $2, $3, $4;
+        }'
+        
+        echo "================================================================================="
         echo ""
         echo "Remote analysis complete."
         ;;
