@@ -3,8 +3,8 @@
 #SBATCH --ntasks=1
 #SBATCH --partition=gpu_h100
 #SBATCH --gres=gpu:1
-#SBATCH --mem=80G
-#SBATCH --cpus-per-task=8
+#SBATCH --mem=8G
+#SBATCH --cpus-per-task=16
 #SBATCH --time=04:00:00
 #SBATCH --output=run_%a/snellius_logs/run_%A_%a.out
 #SBATCH --error=run_%a/snellius_logs/run_%A_%a.err

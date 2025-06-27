@@ -36,8 +36,8 @@ simulation:
 # LLM and model configuration
 models:
   llm:
-    backend: local                   # Options: 'remote' | 'local'
-    model_name: meta-llama/Llama-3.2-1B-Instruct
+    backend: remote                   # Options: 'remote' | 'local'
+    model_name: meta-llama/Llama-3.1-8B-Instruct
     #model_name: google/gemini-2.0-flash-001
     temperature: 0.7
     max_tokens: 800
