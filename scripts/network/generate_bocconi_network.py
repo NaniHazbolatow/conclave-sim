@@ -169,11 +169,11 @@ def add_ideology_scores(G: nx.Graph) -> nx.Graph:
             # Use political lean if available to influence ideology score
             lean = str(G.nodes[node].get('Lean', '')).strip().lower()
             lean_score_map = {
-                'liberal': -0.8 + random.uniform(0, 0.4),
-                'soft liberal': -0.4 + random.uniform(0, 0.4),
-                'moderate': -0.2 + random.uniform(0, 0.4),
-                'soft conservative': 0.2 + random.uniform(0, 0.4),
-                'conservative': 0.6 + random.uniform(0, 0.4)
+                'liberal': -1,
+                'soft liberal': -0.5,
+                'moderate': 0,
+                'soft conservative': 0.5,
+                'conservative': 1
             }
             
             if lean in lean_score_map:

@@ -163,7 +163,7 @@ class SimplifiedToolCaller:
                 raw_response = response_data.get("text", "")
 
                 if not raw_response.strip():
-                    self.logger.warning(f"Attempt {i+1}/{self.max_retries}: LLM returned an empty response.")
+                    self.logger.debug(f"Attempt {i+1}/{self.max_retries}: LLM returned an empty response.")
                     time.sleep(self.retry_delay * (i + 1))
                     continue
 
@@ -174,7 +174,7 @@ class SimplifiedToolCaller:
                     self.logger.info("Successfully parsed tool call using prompt-based strategy.")
                     return parsed_result
                 else:
-                    self.logger.warning(
+                    self.logger.debug(
                         f"Attempt {i+1}/{self.max_retries}: Failed to parse tool response. "
                         f"Error: {parsed_result.error}"
                     )
@@ -224,7 +224,7 @@ class SimplifiedToolCaller:
             )
         
         # --- NATIVE FALLBACK LOGIC ---
-        self.logger.warning(
+        self.logger.debug(
             "Native tool call failed: Model did not return a tool_calls object. "
             "Attempting to parse the text response as a fallback."
         )
@@ -247,7 +247,7 @@ class SimplifiedToolCaller:
                 return parsed_result
 
         # If both native call and text parsing fail, trigger the prompt-based fallback
-        self.logger.warning(
+        self.logger.debug(
             "Native tool-calling and text-parsing fallback both failed. "
             "Switching to the prompt-based strategy as a final attempt."
         )
@@ -258,7 +258,7 @@ class SimplifiedToolCaller:
         if getattr(self.llm_client, 'supports_native_tools', False):
             return self._call_tool_natively(messages, tools, tool_choice)
         else:
-            self.logger.warning("LLM client does not support native tools. Falling back to prompt-based strategy.")
+            self.logger.debug("LLM client does not support native tools. Falling back to prompt-based strategy.")
             return self._call_tool_with_prompt(messages, tools, tool_choice)
 
 class Llama31ToolParser:

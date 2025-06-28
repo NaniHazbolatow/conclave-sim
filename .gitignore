@@ -18,4 +18,8 @@ temp/
 .cache/
 outputs/
 
+# Results and data directories
+results/snellius/
+results/snellius-collected/
+
 .pytest_cache/
