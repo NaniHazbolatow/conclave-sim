@@ -8,8 +8,6 @@
 #SBATCH --time=00:05:00
 #SBATCH --output=run_%a/snellius_logs/run_%A_%a.out
 #SBATCH --error=run_%a/snellius_logs/run_%A_%a.err
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=salome.poulain@student.uva.nl
 
 cd "$SLURM_SUBMIT_DIR" || cd "$(dirname "$0")"
 
