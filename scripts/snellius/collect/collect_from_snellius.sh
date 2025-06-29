@@ -1,7 +1,4 @@
 #!/bin/bash
-
-##########################################################################
-# Script: collect_from_snellius.sh
 #
 # Collect results from multiple Snellius accounts without hardcoded secrets.
 # USAGE:
