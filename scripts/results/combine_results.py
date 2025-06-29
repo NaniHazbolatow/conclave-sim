@@ -70,11 +70,45 @@ def get_run_outcome(consensus_reached, max_gridlock_span, total_rounds, max_roun
 def process_simulation_output(run_directory, param_directory):
     summary_path = os.path.join(run_directory, 'simulation_summary.json')
     votes_path = os.path.join(run_directory, 'voting_data.csv')
+    json_votes_path = os.path.join(run_directory, 'individual_votes_by_round.json')
     embeddings_path = os.path.join(run_directory, 'stance_embeddings.csv')
     try:
         with open(summary_path, 'r') as f:
             summary_data = json.load(f)
-        votes_df = pd.read_csv(votes_path)
+        
+        # Prefer JSON votes file if it exists, otherwise fall back to CSV
+        votes_df = None
+        if os.path.exists(json_votes_path):
+            with open(json_votes_path, 'r') as f:
+                json_votes_data = json.load(f)
+            
+            records = []
+            # Handle cases where round numbers might be strings like "round_1"
+            for round_num_str, round_data in json_votes_data.items():
+                match = re.search(r'\d+', str(round_num_str))
+                if match:
+                    round_num = int(match.group())
+                    for agent_id, candidate in round_data.items():
+                        # Load the raw data, cleaning will be done later
+                        records.append({'round': round_num, 'agent_id': agent_id, 'candidate_voted_for': candidate})
+            if records:
+                votes_df = pd.DataFrame(records)
+        
+        if votes_df is None and os.path.exists(votes_path):
+            votes_df = pd.read_csv(votes_path)
+
+
+        if votes_df is None:
+            # If no voting data is found at all, create an empty dataframe to avoid errors
+            votes_df = pd.DataFrame(columns=['round', 'agent_id', 'candidate_voted_for'])
+
+        # Authoritative cleaning step: handle dicts and ensure string type
+        # This is the single point of truth for cleaning the candidate name data
+        if not votes_df.empty:
+            votes_df['candidate_voted_for'] = votes_df['candidate_voted_for'].apply(
+                lambda x: x.get('candidate_name') if isinstance(x, dict) else x
+            )
+
         embeddings_df = pd.read_csv(embeddings_path)
         if embeddings_df['round'].dtype == 'object':
             embeddings_df['round'] = embeddings_df['round'].astype(str).str.extract(r'(\d+)').fillna(0).astype(int)
@@ -154,12 +188,30 @@ def process_simulation_output(run_directory, param_directory):
                 gridlock_end_round = None
         # Churn / Flexibility
         mean_switches_per_agent = 0
+        switch_probability_per_round = 0
+        mean_switches_per_round = 0
         if not votes_df.empty and total_rounds is not None and total_rounds > 0:
-            votes_df_sorted = votes_df.sort_values(by=['agent_id', 'round'])
-            switches = (votes_df_sorted.groupby('agent_id')['candidate_voted_for'].shift() != votes_df_sorted['candidate_voted_for']).sum()
-            num_agents = summary_data.get('config', {}).get('num_agents', 1)
+            # Data is already cleaned, so just perform the groupby and calculations
+            votes_df_final = votes_df.groupby(['agent_id', 'round'])['candidate_voted_for'].last().reset_index()
+            votes_df_final = votes_df_final.sort_values(by=['agent_id', 'round'])
+            
+            # Now count switches between rounds
+            votes_df_final['prev_vote'] = votes_df_final.groupby('agent_id')['candidate_voted_for'].shift()
+            switches = ((votes_df_final['candidate_voted_for'] != votes_df_final['prev_vote']) & 
+                       votes_df_final['prev_vote'].notna()).sum()
+            
+            # Robustly get the number of agents
+            num_agents = summary_data.get('config', {}).get('num_agents')
+            if num_agents is None or num_agents == 0:
+                num_agents = votes_df['agent_id'].nunique()
+
             if num_agents > 0:
                 mean_switches_per_agent = switches / num_agents
+                # The probability of any given agent switching in any given round
+                switch_probability_per_round = switches / (num_agents * total_rounds) if total_rounds > 0 and num_agents > 0 else 0
+                # The average number of agents switching per round
+                mean_switches_per_round = switches / total_rounds if total_rounds > 0 else 0
+
         # Outcome Label
         run_outcome = get_run_outcome(consensus_reached, max_gridlock_span, total_rounds, max_rounds)
         
@@ -183,6 +235,8 @@ def process_simulation_output(run_directory, param_directory):
             'max_gridlock_span': max_gridlock_span,
             'gridlock_end_round': gridlock_end_round,
             'mean_switches_per_agent': mean_switches_per_agent,
+            'switch_probability_per_round': switch_probability_per_round,
+            'mean_switches_per_round': mean_switches_per_round,
             'run_outcome': run_outcome,
             'winner_name': winner_name,
         }
@@ -214,13 +268,13 @@ def main():
         'run_id', 'temperature', 'rationality', 'consensus_reached', 
         'rounds_to_consensus', 'total_rounds', 'final_leading_margin', 'polarisation_start', 
         'polarisation_peak', 'polarisation_final', 'max_gridlock_span', 
-        'gridlock_end_round', 'mean_switches_per_agent', 'run_outcome', 'winner_name'
+        'gridlock_end_round', 'mean_switches_per_agent', 'switch_probability_per_round', 'mean_switches_per_round', 'run_outcome', 'winner_name'
     ]
     for col in column_order:
         if col not in df.columns:
             df[col] = None
     df = df[column_order]
-    output_dir = 'results'
+    output_dir = '../../results'
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, 'combined_results_snellius.csv')
     df.to_csv(output_path, index=False)
