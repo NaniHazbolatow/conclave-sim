@@ -1,10 +1,15 @@
-# ConclaveSim: A Multi-Agent Simulation of the Papal Election
+# ConclaveSim: A Multi-Agent Simulation of the Papal Election. [Extended]
 
-## Introduction
+ConclaveSim is an agent-based simulation framework that models the dynamics of papal elections using large language model (LLM) agents. Each cardinal is represented as a generative agent with a unique profile, ideological stance, and conversational memory. Agents participate in group discussions, update their internal stances via LLM-based reflection, and vote in sequential rounds until a two-thirds majority is achieved. The framework enables the study of how informal discussions, strategic alliances, and decentralized negotiation shape formal outcomes in highly constrained institutional settings.
 
-ConclaveSim is a sophisticated, multi-agent simulation framework designed to model the intricate dynamics of the papal election process. Leveraging large language models (LLMs), this project provides a unique platform for exploring the strategic interactions, discussions, and voting patterns that characterize a papal conclave. Each cardinal is represented by an autonomous agent, endowed with a distinct personality, background, and set of priorities, all derived from real-world data.
+**This repository extends the original ConclaveSim platform by introducing:**
+- A stance-based embedding mechanism to track ideological convergence and polarization.
+- A group assignment function that blends random allocation with utility-based optimization, based on social ties and ideological proximity.
+- Flexible control over simulation parameters such as LLM temperature, group size, and rationality, allowing for systematic exploration of consensus formation, gridlock, and the emergence of dominant candidates.
+- Support for both local and distributed (Snellius cluster) execution, with automated scripts for large-scale parameter sweeps and result collection.
+- Usage of meta-llama/Llama-3.1-8B-Instruct compared to claude 3.7s sonnet
 
-The simulation allows for a deep dive into the complex decision-making processes of the College of Cardinals, offering insights into how consensus is built, how factions emerge, and how a new Pope is ultimately elected. By providing a configurable and extensible environment, ConclaveSim serves as a powerful tool for researchers, historians, and anyone interested in the intersection of artificial intelligence, social dynamics, and religious studies.
+By building on the foundation of ConclaveSim, this project provides a powerful tool for researchers interested in the intersection of AI, social dynamics, and institutional decision-making, and demonstrates how LLMs can serve as generative social agents in complex simulations.
 
 ## System Architecture
 
@@ -58,19 +63,117 @@ uv run python simulations/run.py
 
 The simulation results will be saved in the `simulations/outputs` directory.
 
-## Simulation Modes
+#### Command-Line Flags
 
-ConclaveSim supports several simulation modes, each designed to explore different aspects of the papal election process:
+You can customize the simulation run with the following flags:
 
-*   **Single Round**: A single voting round without any discussion.
-*   **Multi-Round**: Multiple voting rounds, with the results of each round being shared with the agents before the next round begins.
-*   **Discussion-Based**: Multiple voting rounds, with discussion periods between each round. During the discussion periods, the agents can interact with each other and try to build consensus.
+- `--group {small,medium,large,xlarge,full}`: Select the active predefined group (overrides config.yaml groups.active)
+- `--max-rounds N`: Set the maximum number of simulation rounds (1-50)
+- `--parallel` / `--no-parallel`: Enable or disable parallel processing
+- `--rationality R`: Set agent rationality (0.0=random to 1.0=fully rational)
+- `--temperature T`: Set LLM temperature (0.0=deterministic to 2.0=creative)
+- `--discussion-size N`: Number of agents per discussion group (2-20)
+- `--output-dir DIR`: Custom output directory (default: auto-generated timestamp)
+- `--log-level {DEBUG,INFO,WARNING,ERROR}`: Set logging level (overrides config.yaml)
+- `--no-viz`: Disable visualization generation
 
-## Future Work
+**Examples:**
 
-ConclaveSim is an ongoing project, and there are many opportunities for future development and improvement. Some potential areas for future work include:
+- Run with medium group and 10 rounds:
+  ```bash
+  uv run python simulations/run.py --group medium --max-rounds 10
+  ```
+- Run with custom rationality and temperature:
+  ```bash
+  uv run python simulations/run.py --rationality 0.9 --temperature 0.5
+  ```
+- Run with parallel processing disabled:
+  ```bash
+  uv run python simulations/run.py --no-parallel
+  ```
+- Run with custom discussion group size:
+  ```bash
+  uv run python simulations/run.py --discussion-size 5
+  ```
 
-*   **Experimenting with different LLMs**: The simulation can be extended to support a wider range of LLMs, allowing for a comparative analysis of their performance.
-*   **Improving the agent models**: The agent models can be made more sophisticated by incorporating more detailed psychological and sociological models of human behavior.
-*   **Adding new simulation modes**: New simulation modes can be added to explore different aspects of the papal election process, such as the role of the media or the influence of external events.
-*   **Developing a graphical user interface**: A graphical user interface (GUI) could be developed to make the simulation more accessible to a wider audience.
+**Local/Remote**
+To run the simulation locally or remotely, the ```config.yaml``` file must be manually editted and set to either *remote* or *local*. The remote model requires the reation of a ```.env``` file with your openrouter api key set to ```OPENROUTER_API_KEY```
+
+### Running a Local LLM or on Snellius
+
+Running a local LLM requires a powerful GPU and substantial RAM. For large-scale or distributed runs, you can use the Snellius cluster. The workflow is as follows:
+
+> **Note:** This project uses Hugging Face for model loading. On Snellius, you must have your Hugging Face account configured (e.g., via `huggingface-cli login`) and have access to the required model (such as meta-llama/Llama-3.1-8B-Instruct) before launching jobs.
+
+1. **Edit Job Templates**  
+   - Navigate to `scripts/snellius/distribute/templates/`.
+   - Modify `batch_script.sh` to set the parameters for a single simulation run (e.g., resources, environment variables, and command-line flags).
+   - Other template files in this directory help automate job submission across multiple folders and parameter sets.
+
+2. **Generate Directory Structure for Batch Runs**  
+   - Use the `generate_tree.sh` script in `scripts/snellius/distribute/` to automatically create a directory tree for your batch jobs.
+   - This script sets up folders for different parameter combinations and copies the necessary SLURM scripts into each.
+
+   ```bash
+   bash scripts/snellius/distribute/generate_tree.sh
+   ```
+
+3. **Submit Jobs to Snellius**  
+   - After generating the directory structure, use the provided submission scripts (e.g., `submit_all.sh` or `submit_batch.sh` in the same directory) to submit your jobs to the cluster.
+
+4. **Collect Results**  
+   - Use the scripts in `scripts/snellius/collect/` to gather and organize results from completed runs.
+
+**Note:**
+- Make sure to adjust resource requests and parameters in `batch_script.sh` according to your experiment needs and Snellius policies.
+- For more details, see the comments in each script and the `scripts/snellius/` directory.
+
+## Project Structure
+Folders and important files in this repository:
+
+```
+conclave-sim/
+├── analysis/                           # Jupyter notebooks for analysis
+│   ├── conclave_analysis_new.ipynb
+│   └── special_analysis.ipynb
+├── conclave/                           # Core simulation code
+│   ├── agents/                         # Agent classes and mixins
+│   ├── config/                         # Configuration management
+│   ├── embeddings/                     # Embedding utilities
+│   ├── environments/                   # Simulation environments
+│   ├── llm/                            # LLM management and tools
+│   ├── network/                        # Network management
+│   ├── prompting/                      # Prompt generation and templates
+│   ├── utils/                          # Utility functions
+│   └── visualization/                  # Visualization tools
+├── config/                             # Additional config files and scripts
+│   ├── groups.yaml
+│   └── scripts/                        # Helper scripts for configuration and data loading
+├── data/                               # Input data files (e.g., cardinals, networks)
+│   ├── cardinals_master_data.csv
+│   └── network/
+├── results/                            # Results from 2500 snellius runs with 25 params
+├── scripts/                            # Various scripts for data processing, analysis, and Snellius cluster
+│   ├── analysis/                       # Voting analysis scripts
+│   ├── data_processing/                # Data processing scripts
+│   ├── network/                        # Network generation and processing
+│   ├── results/                        # Results combination scripts
+│   └── snellius/                       # Scripts for running/distributing jobs on Snellius cluster      
+│       ├── distribute/
+│       │   ├── templates/              # Contains files to submit jobs to snellius among ways to automate this
+│       │   │   └── batch_script.sh     # Main snellius job script
+│       │   └── generate_tree.sh        # Used to automatically generate a directory tree folder with chosen parameters and SLURM scripts
+│       └──  collect/                   
+├── config.yaml                         # Main configuration file
+├── pyproject.toml                      # Python project metadata
+├── requirements.txt                    # Python dependencies
+├── README.md                           # Project documentation
+├── uv.lock                             # Lock file for uv
+├── simulations/                        # Simulation runner
+│   └── run.py                          # Main entry point for running simulations
+│ 
+├── config.yaml                         # Main configuration file
+├── pyproject.toml                      # Python project metadata
+├── requirements.txt                    # Python dependencies
+├── uv.lock                             # Lock file for uv
+```

@@ -1,7 +1,4 @@
 #!/bin/bash
-
-###############################################################################
-# generate_tree.sh
 #
 # Script to generate the Snellius simulation directory tree structure.
 # Usage:
