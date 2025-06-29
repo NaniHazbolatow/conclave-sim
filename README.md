@@ -103,8 +103,6 @@ To run the simulation locally or remotely, the ```config.yaml``` file must be ma
 
 Running a local LLM requires a powerful GPU and substantial RAM. For large-scale or distributed runs, you can use the Snellius cluster. The workflow is as follows:
 
-> **Note:** This project uses Hugging Face for model loading. On Snellius, you must have your Hugging Face account configured (e.g., via `huggingface-cli login`) and have access to the required model (such as meta-llama/Llama-3.1-8B-Instruct) before launching jobs.
-
 1. **Edit Job Templates**  
    - Navigate to `scripts/snellius/distribute/templates/`.
    - Modify `batch_script.sh` to set the parameters for a single simulation run (e.g., resources, environment variables, and command-line flags).
@@ -124,9 +122,10 @@ Running a local LLM requires a powerful GPU and substantial RAM. For large-scale
 4. **Collect Results**  
    - Use the scripts in `scripts/snellius/collect/` to gather and organize results from completed runs.
 
-**Note:**
-- Make sure to adjust resource requests and parameters in `batch_script.sh` according to your experiment needs and Snellius policies.
-- For more details, see the comments in each script and the `scripts/snellius/` directory.
+
+> **Note:** This project uses Hugging Face for model loading. On Snellius, you must have your Hugging Face account configured (e.g., via `huggingface-cli login`) and have access to the required model (such as meta-llama/Llama-3.1-8B-Instruct) before launching jobs.
+> Make sure to adjust resource requests and parameters in `batch_script.sh` according to your experiment needs and Snellius policies.
+> For more details, see the comments in each script and the `scripts/snellius/` directory.
 
 ## Project Structure
 Folders and important files in this repository:
@@ -171,7 +170,6 @@ conclave-sim/
 ├── uv.lock                             # Lock file for uv
 ├── simulations/                        # Simulation runner
 │   └── run.py                          # Main entry point for running simulations
-│ 
 ├── config.yaml                         # Main configuration file
 ├── pyproject.toml                      # Python project metadata
 ├── requirements.txt                    # Python dependencies
