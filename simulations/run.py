@@ -294,7 +294,7 @@ def main():
                 logger.error(f"Error saving even basic simulation summary: {fallback_error}")
 
         # Generate enhanced visualizations
-        if not args.no_viz:
+        if False or not args.no_viz:
             try:
                 logger.info("Generating final visualizations...")
                 visualizer = CardinalVisualizer(str(viz_dir))

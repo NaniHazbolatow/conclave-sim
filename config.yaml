@@ -11,7 +11,7 @@ simulation:
   enable_parallel: true               # Enable parallel processing for better performance
   
   # Agent behavior parameters
-  rationality: 0.8                    # Range: 0.0 (fully random) - 1.0 (fully rational/utility-based)
+  rationality: 1.0                  # Range: 0.0 (fully random) - 1.0 (fully rational/utility-based)
   
   # Discussion settings
   discussion_group_size: 5            # Number of agents per discussion group
@@ -39,7 +39,7 @@ models:
     backend: remote                   # Options: 'remote' | 'local'
     model_name: meta-llama/Llama-3.1-8B-Instruct
     #model_name: google/gemini-2.0-flash-001
-    temperature: 0.7
+    temperature: 2.0
     max_tokens: 800
     
     # Tool calling configuration
